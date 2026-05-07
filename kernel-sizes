@@ -1,0 +1,103 @@
+#!/bin/bash
+# Estimate disk usage of kernel packages across Ubuntu series via chdist.
+# A "kernel package" is any binary built by a source whose binaries include
+# something that Provides: linux-image.
+set -euo pipefail
+
+usage() {
+    cat >&2 <<EOF
+Usage: ${0##*/} [-s SERIES]... [-a ARCH]... [-o MODE] [-S SIZEFIELD]
+  -s SERIES     chdist name (Ubuntu series); repeatable; default: all chdists
+  -a ARCH       binary architecture; repeatable; default: all arches in chdist
+  -o MODE       output: summary (default), names, all
+  -S SIZEFIELD  Packages field used as size: Size (default) or Installed-Size
+EOF
+    exit "${1:-1}"
+}
+
+serieses=()
+arches=()
+mode=summary
+sizefield=Size
+
+while getopts "s:a:o:S:h" opt; do
+    case "$opt" in
+        s) serieses+=("$OPTARG") ;;
+        a) arches+=("$OPTARG") ;;
+        o) mode="$OPTARG" ;;
+        S) sizefield="$OPTARG" ;;
+        h) usage 0 ;;
+        *) usage ;;
+    esac
+done
+
+case "$mode" in summary|names|all) ;; *) usage ;; esac
+
+if [[ ${#serieses[@]} -eq 0 ]]; then
+    mapfile -t serieses < <(chdist list 2>/dev/null \
+        | awk 'NR>1 && NF{print $1}')
+fi
+
+stream_files() {
+    local f
+    for f in "$@"; do
+        case "$f" in
+            *.gz)  gzip  -dc -- "$f" ;;
+            *.xz)  xz    -dc -- "$f" ;;
+            *.lz4) lz4   -dc -- "$f" ;;
+            *.zst) zstd  -dc -- "$f" ;;
+            *)     cat        -- "$f" ;;
+        esac
+        printf '\n'
+    done
+}
+
+run_one() {
+    local series=$1 arch=$2
+    local -a filters=("Identifier: Packages")
+    [[ -n "$arch" ]] && filters+=("Architecture: $arch")
+
+    local -a files
+    mapfile -t files < <(chdist "$series" apt-get indextargets \
+        --format '$(FILENAME)' "${filters[@]}" 2>/dev/null | awk 'NF')
+    [[ ${#files[@]} -gt 0 ]] || { echo "no Packages indexes for $series/${arch:-any}" >&2; return 0; }
+
+    stream_files "${files[@]}" | awk \
+        -v series="$series" -v arch="${arch:-any}" \
+        -v mode="$mode" -v sizefield="$sizefield" '
+        function emit(   src) {
+            if (pkg == "") return
+            src = (source != "" ? source : pkg)
+            n++; pkgs[n]=pkg; archs[n]=parch; srcs[n]=src; sizes[n]=size+0
+            if (provides ~ /(^|,)[ \t]*linux-image([ \t,(]|$)/) iskern[src]=1
+            pkg=""; source=""; parch=""; size=""; provides=""
+        }
+        BEGIN { sf_prefix = sizefield ": "; sf_len = length(sf_prefix) }
+        /^Package: /      { pkg      = substr($0, 10) }
+        /^Source: /       { source   = substr($0, 9); sub(/[ \t].*/, "", source) }
+        /^Architecture: / { parch    = substr($0, 15) }
+        /^Provides: /     { provides = substr($0, 11) }
+        index($0, sf_prefix) == 1 { size = substr($0, sf_len + 1) }
+        /^[[:space:]]*$/  { emit() }
+        END {
+            emit()
+            count=0; total=0
+            for (i=1; i<=n; i++) if (iskern[srcs[i]]) {
+                count++; total += sizes[i]
+                if (mode != "summary")
+                    printf "%s\t%s\t%s\t%s\t%d\n", series, archs[i], srcs[i], pkgs[i], sizes[i]
+            }
+            if (mode != "names")
+                printf "# %s/%s\tcount=%d\tbytes=%d\tGiB=%.2f\n", \
+                    series, arch, count, total, total/1073741824
+        }
+    '
+}
+
+if [[ ${#arches[@]} -eq 0 ]]; then
+    for series in "${serieses[@]}"; do run_one "$series" ""; done
+else
+    for series in "${serieses[@]}"; do
+        for arch in "${arches[@]}"; do run_one "$series" "$arch"; done
+    done
+fi
