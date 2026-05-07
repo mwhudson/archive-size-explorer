@@ -1,7 +1,10 @@
 #!/bin/bash
 # Estimate disk usage of kernel packages across Ubuntu series via chdist.
 # A "kernel package" is any binary built by a source whose binaries include
-# something that Provides: linux-image.
+# something that Provides: linux-image, plus any binary named
+# linux-objects-*-<kver> for a <kver> seen in those kernel image binaries
+# (e.g. linux-objects-nvidia-580-7.0.0-15-generic, sourced from
+# linux-restricted-modules).
 set -euo pipefail
 
 usage() {
@@ -65,11 +68,21 @@ run_one() {
     stream_files "${files[@]}" | awk \
         -v series="$series" -v arch="${arch:-any}" \
         -v mode="$mode" -v sizefield="$sizefield" '
-        function emit(   src) {
+        function regex_escape(s) { gsub(/[.+]/, "\\\\&", s); return s }
+        function extract_kver(p,    s) {
+            s = p
+            if (sub(/^linux-image-unsigned-/, "", s) && s ~ /^[0-9]+\./) return s
+            s = p
+            if (sub(/^linux-image-/, "", s) && s ~ /^[0-9]+\./) return s
+            return ""
+        }
+        function emit(   src, v) {
             if (pkg == "") return
             src = (source != "" ? source : pkg)
             n++; pkgs[n]=pkg; archs[n]=parch; srcs[n]=src; sizes[n]=size+0
             if (provides ~ /(^|,)[ \t]*linux-image([ \t,(]|$)/) iskern[src]=1
+            v = extract_kver(pkg)
+            if (v != "") kvers[v] = 1
             pkg=""; source=""; parch=""; size=""; provides=""
         }
         BEGIN { sf_prefix = sizefield ": "; sf_len = length(sf_prefix) }
@@ -81,15 +94,32 @@ run_one() {
         /^[[:space:]]*$/  { emit() }
         END {
             emit()
-            count=0; total=0
-            for (i=1; i<=n; i++) if (iskern[srcs[i]]) {
-                count++; total += sizes[i]
-                if (mode != "summary")
-                    printf "%s\t%s\t%s\t%s\t%d\n", series, archs[i], srcs[i], pkgs[i], sizes[i]
+            objre = ""
+            for (v in kvers) {
+                objre = (objre == "" ? "" : objre "|") regex_escape(v)
             }
-            if (mode != "names")
-                printf "# %s/%s\tcount=%d\tbytes=%d\tGiB=%.2f\n", \
-                    series, arch, count, total, total/1073741824
+            if (objre != "") objre = "^linux-objects-.+-(" objre ")$"
+            tcount=0; tsize=0; narch=0
+            for (i=1; i<=n; i++) {
+                hit = iskern[srcs[i]] || (objre != "" && pkgs[i] ~ objre)
+                if (!hit) continue
+                a = archs[i]
+                if (!(a in acount)) { narch++; aorder[narch]=a }
+                acount[a]++; asize[a] += sizes[i]
+                tcount++; tsize += sizes[i]
+                if (mode != "summary")
+                    printf "%s\t%s\t%s\t%s\t%d\n", series, a, srcs[i], pkgs[i], sizes[i]
+            }
+            if (mode != "names") {
+                for (i=1; i<=narch; i++) {
+                    a = aorder[i]
+                    printf "# %s/%s\tcount=%d\tbytes=%d\tGiB=%.2f\n", \
+                        series, a, acount[a], asize[a], asize[a]/1073741824
+                }
+                if (narch > 1)
+                    printf "# %s/total\tcount=%d\tbytes=%d\tGiB=%.2f\n", \
+                        series, tcount, tsize, tsize/1073741824
+            }
         }
     '
 }
