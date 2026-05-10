@@ -4,14 +4,17 @@
 # something that Provides: linux-image, plus any binary named
 # linux-objects-*-<kver> for a <kver> seen in those kernel image binaries
 # (e.g. linux-objects-nvidia-580-7.0.0-15-generic, sourced from
-# linux-restricted-modules).
+# linux-restricted-modules). The sizes of those sources' tarballs/dsc/diffs
+# from the Sources index are also included.
 set -euo pipefail
 
 usage() {
     cat >&2 <<EOF
-Usage: ${0##*/} [-s SERIES]... [-a ARCH]... [-o MODE] [-S SIZEFIELD]
+Usage: ${0##*/} [-s SERIES]... [-a ARCH]... [-p POCKET]... [-o MODE] [-S SIZEFIELD]
   -s SERIES     chdist name (Ubuntu series); repeatable; default: all chdists
   -a ARCH       binary architecture; repeatable; default: all arches in chdist
+  -p POCKET     pocket: release, security, updates, proposed, backports;
+                repeatable; default: all pockets in chdist
   -o MODE       output: summary (default), names, all
   -S SIZEFIELD  Packages field used as size: Size (default) or Installed-Size
 EOF
@@ -20,13 +23,18 @@ EOF
 
 serieses=()
 arches=()
+pockets=()
 mode=summary
 sizefield=Size
 
-while getopts "s:a:o:S:h" opt; do
+while getopts "s:a:p:o:S:h" opt; do
     case "$opt" in
         s) serieses+=("$OPTARG") ;;
         a) arches+=("$OPTARG") ;;
+        p) case "$OPTARG" in
+               release|security|updates|proposed|backports) pockets+=("$OPTARG") ;;
+               *) echo "unknown pocket: $OPTARG" >&2; usage ;;
+           esac ;;
         o) mode="$OPTARG" ;;
         S) sizefield="$OPTARG" ;;
         h) usage 0 ;;
@@ -55,26 +63,47 @@ stream_files() {
     done
 }
 
-run_one() {
-    local series=$1; shift
-    local -a wanted_arches=("$@")
+# Collect index file paths for a given Identifier (Packages or Sources) across
+# the requested arch × pocket combinations. For Sources, arch is ignored.
+collect_indexes() {
+    local series=$1 identifier=$2
+    local -a a_list=("${arches[@]}")
+    local -a p_list=("${pockets[@]}")
+    [[ ${#a_list[@]} -eq 0 ]] && a_list=("")
+    [[ ${#p_list[@]} -eq 0 ]] && p_list=("")
+    [[ "$identifier" == "Sources" ]] && a_list=("")
 
-    local -a files=()
-    if [[ ${#wanted_arches[@]} -eq 0 ]]; then
-        mapfile -t files < <(chdist "$series" apt-get indextargets \
-            --format '$(FILENAME)' "Identifier: Packages" 2>/dev/null | awk 'NF')
-    else
-        local arch
-        for arch in "${wanted_arches[@]}"; do
-            mapfile -t -O "${#files[@]}" files < <(chdist "$series" apt-get indextargets \
-                --format '$(FILENAME)' "Identifier: Packages" "Architecture: $arch" 2>/dev/null | awk 'NF')
+    local arch pocket suite
+    local -a filters
+    for arch in "${a_list[@]}"; do
+        for pocket in "${p_list[@]}"; do
+            filters=("Identifier: $identifier")
+            [[ -n "$arch" ]] && filters+=("Architecture: $arch")
+            if [[ -n "$pocket" ]]; then
+                case "$pocket" in
+                    release) suite=$series ;;
+                    *)       suite="$series-$pocket" ;;
+                esac
+                filters+=("Suite: $suite")
+            fi
+            chdist "$series" apt-get indextargets --format '$(FILENAME)' \
+                "${filters[@]}" 2>/dev/null | awk 'NF'
         done
-        # Dedup file paths in case the same Packages file is selected by multiple filters.
-        mapfile -t files < <(printf '%s\n' "${files[@]}" | awk 'NF && !s[$0]++')
-    fi
-    [[ ${#files[@]} -gt 0 ]] || { echo "no Packages indexes for $series" >&2; return 0; }
+    done | awk 'NF && !s[$0]++'
+}
 
-    stream_files "${files[@]}" | awk \
+run_one() {
+    local series=$1
+    local -a pkg_files src_files
+    mapfile -t pkg_files < <(collect_indexes "$series" Packages)
+    mapfile -t src_files < <(collect_indexes "$series" Sources)
+    [[ ${#pkg_files[@]} -gt 0 ]] || { echo "no Packages indexes for $series" >&2; return 0; }
+
+    {
+        stream_files "${pkg_files[@]}"
+        printf '__SECTION__sources\n\n'
+        [[ ${#src_files[@]} -gt 0 ]] && stream_files "${src_files[@]}"
+    } | awk \
         -v series="$series" \
         -v mode="$mode" -v sizefield="$sizefield" '
         function regex_escape(s) { gsub(/[.+]/, "\\\\&", s); return s }
@@ -85,35 +114,73 @@ run_one() {
             if (sub(/^linux-image-/, "", s) && s ~ /^[0-9]+\./) return s
             return ""
         }
-        function emit(   src, v, key) {
+        function emit_pkg(   src, v, key) {
             if (pkg == "") return
             key = pkg SUBSEP parch
-            if (key in seen) { pkg=""; source=""; parch=""; size=""; provides=""; return }
-            seen[key] = 1
-            src = (source != "" ? source : pkg)
-            n++; pkgs[n]=pkg; archs[n]=parch; srcs[n]=src; sizes[n]=size+0
-            if (provides ~ /(^|,)[ \t]*linux-image([ \t,(]|$)/) iskern[src]=1
-            v = extract_kver(pkg)
-            if (v != "") {
-                kvers[v] = 1
-                kvers_by_arch[parch SUBSEP v] = 1
+            if (!(key in seen)) {
+                seen[key] = 1
+                src = (source != "" ? source : pkg)
+                n++; pkgs[n]=pkg; archs[n]=parch; srcs[n]=src; sizes[n]=size+0
+                if (provides ~ /(^|,)[ \t]*linux-image([ \t,(]|$)/) iskern[src]=1
+                v = extract_kver(pkg)
+                if (v != "") { kvers[v]=1; kvers_by_arch[parch SUBSEP v]=1 }
             }
             pkg=""; source=""; parch=""; size=""; provides=""
         }
-        BEGIN { sf_prefix = sizefield ": "; sf_len = length(sf_prefix) }
-        /^Package: /      { pkg      = substr($0, 10) }
-        /^Source: /       { source   = substr($0, 9); sub(/[ \t].*/, "", source) }
-        /^Architecture: / { parch    = substr($0, 15) }
-        /^Provides: /     { provides = substr($0, 11) }
-        index($0, sf_prefix) == 1 { size = substr($0, sf_len + 1) }
-        /^[[:space:]]*$/  { emit() }
-        END {
-            emit()
-            objre = ""
-            for (v in kvers) {
-                objre = (objre == "" ? "" : objre "|") regex_escape(v)
+        function emit_src() {
+            if (spkg != "" && !(spkg in src_seen)) {
+                src_seen[spkg] = 1
+                src_total_all += spkg_size
+                if (iskern[spkg]) {
+                    ksrc_count++
+                    ksrc_size += spkg_size
+                    if (mode != "summary")
+                        printf "%s\t%s\t%s\t%s\t%d\n", series, "source", spkg, spkg, spkg_size
+                }
             }
+            spkg=""; spkg_size=0; in_files=0
+        }
+        BEGIN {
+            sf_prefix = sizefield ": "; sf_len = length(sf_prefix)
+            section = "packages"
+        }
+
+        /^__SECTION__sources$/ { emit_pkg(); section = "sources"; next }
+
+        section == "packages" {
+            if (substr($0,1,9)  == "Package: ")      { pkg = substr($0,10) }
+            else if (substr($0,1,8)  == "Source: ")  { source = substr($0,9); sub(/[ \t].*/,"",source) }
+            else if (substr($0,1,14) == "Architecture: ") { parch = substr($0,15) }
+            else if (substr($0,1,10) == "Provides: ") { provides = substr($0,11) }
+            else if (index($0, sf_prefix) == 1)      { size = substr($0, sf_len + 1) }
+            else if ($0 ~ /^[[:space:]]*$/)          { emit_pkg() }
+            next
+        }
+
+        section == "sources" {
+            if (substr($0,1,9) == "Package: ") {
+                spkg = substr($0,10); in_files = 0
+            } else if (substr($0,1,6) == "Files:") {
+                in_files = 1
+            } else if (in_files && substr($0,1,1) == " ") {
+                if (NF >= 3) spkg_size += $2 + 0
+            } else if ($0 ~ /^[[:space:]]*$/) {
+                emit_src()
+            } else {
+                in_files = 0
+            }
+            next
+        }
+
+        END {
+            emit_pkg()
+            emit_src()
+
+            objre = ""
+            for (v in kvers)
+                objre = (objre == "" ? "" : objre "|") regex_escape(v)
             if (objre != "") objre = "^linux-objects-.+-(" objre ")$"
+
             tsize=0; ttotal=0; narch=0
             for (i=1; i<=n; i++) {
                 a = archs[i]
@@ -145,10 +212,17 @@ run_one() {
                     printf "# %s/%s\tkernels=%d\tbytes=%d\tGiB=%.2f\tpct=%.1f%%\n", \
                         series, a, kcount[a]+0, asize[a], asize[a]/1073741824, pct
                 }
-                if (narch > 1) {
-                    pct = (ttotal > 0 ? 100.0*tsize/ttotal : 0)
-                    printf "# %s/total\tkernels=%d\tbytes=%d\tGiB=%.2f\tpct=%.1f%%\n", \
-                        series, tkcount, tsize, tsize/1073741824, pct
+                if (ksrc_count > 0) {
+                    pct = (src_total_all > 0 ? 100.0*ksrc_size/src_total_all : 0)
+                    printf "# %s/source\tsources=%d\tbytes=%d\tGiB=%.2f\tpct=%.1f%%\n", \
+                        series, ksrc_count, ksrc_size, ksrc_size/1073741824, pct
+                }
+                if (narch > 1 || ksrc_count > 0) {
+                    grand_kern = tsize + ksrc_size
+                    grand_all  = ttotal + src_total_all
+                    pct = (grand_all > 0 ? 100.0*grand_kern/grand_all : 0)
+                    printf "# %s/total\tkernels=%d\tsources=%d\tbytes=%d\tGiB=%.2f\tpct=%.1f%%\n", \
+                        series, tkcount, ksrc_count+0, grand_kern, grand_kern/1073741824, pct
                 }
             }
         }
@@ -156,5 +230,5 @@ run_one() {
 }
 
 for series in "${serieses[@]}"; do
-    run_one "$series" "${arches[@]}"
+    run_one "$series"
 done
