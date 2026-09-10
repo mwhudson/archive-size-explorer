@@ -1,0 +1,869 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kernels in the Ubuntu archive</title>
+<style>
+:root {
+  color-scheme: light;
+  --page:           #f9f9f7;
+  --surface:        #fcfcfb;
+  --text-primary:   #0b0b0b;
+  --text-secondary: #52514e;
+  --muted:          #898781;
+  --grid:           #e1e0d9;
+  --axis:           #c3c2b7;
+  --border:         rgba(11,11,11,0.10);
+  --chip:           #ffffff;
+  --chip-on:        #0b0b0b;
+  --chip-on-text:   #fcfcfb;
+  --neutral-fill:   #e6e5df;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+  --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page:           #0d0d0d;
+    --surface:        #1a1a19;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --muted:          #898781;
+    --grid:           #2c2c2a;
+    --axis:           #383835;
+    --border:         rgba(255,255,255,0.10);
+    --chip:           #232322;
+    --chip-on:        #fcfcfb;
+    --chip-on-text:   #0b0b0b;
+    --neutral-fill:   #34343180;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+    --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page:           #0d0d0d;
+  --surface:        #1a1a19;
+  --text-primary:   #ffffff;
+  --text-secondary: #c3c2b7;
+  --muted:          #898781;
+  --grid:           #2c2c2a;
+  --axis:           #383835;
+  --border:         rgba(255,255,255,0.10);
+  --chip:           #232322;
+  --chip-on:        #fcfcfb;
+  --chip-on-text:   #0b0b0b;
+  --neutral-fill:   #34343180;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+  --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text-primary);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 28px 20px 64px; }
+header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+h1 { font-size: 22px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+.sub { color: var(--text-secondary); font-size: 13px; }
+.spacer { flex: 1; }
+button.plain {
+  font: inherit; background: var(--chip); color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: 7px; padding: 4px 10px;
+  cursor: pointer;
+}
+button.plain:hover { color: var(--text-primary); }
+
+.tiles { display: flex; gap: 12px; flex-wrap: wrap; margin: 22px 0 8px; }
+.tile {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 14px 18px; min-width: 190px; flex: 1;
+}
+.tile .label { color: var(--text-secondary); font-size: 12px; letter-spacing: 0.02em; }
+.tile .value { font-size: 28px; font-weight: 620; margin-top: 2px; letter-spacing: -0.02em; }
+.tile .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+.filters {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 4px 16px 14px; margin: 16px 0 20px;
+}
+.frow { display: flex; gap: 10px; align-items: flex-start; padding-top: 10px; flex-wrap: wrap; }
+.frow > .flabel {
+  color: var(--text-secondary); font-size: 12px; width: 88px;
+  flex: none; padding-top: 5px; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+.chip {
+  font: inherit; font-size: 12.5px; background: var(--chip);
+  color: var(--text-secondary); border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px 11px; cursor: pointer; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.chip:hover { color: var(--text-primary); }
+.chip[aria-pressed="true"] {
+  background: var(--chip-on); color: var(--chip-on-text); border-color: var(--chip-on);
+}
+.chip .swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.chip .allnone { font-size: 11px; }
+
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
+.tab {
+  font: inherit; background: none; border: none; border-bottom: 2px solid transparent;
+  color: var(--text-secondary); padding: 8px 14px; cursor: pointer; margin-bottom: -1px;
+}
+.tab[aria-selected="true"] { color: var(--text-primary); border-bottom-color: var(--text-primary); font-weight: 560; }
+
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 18px 20px 14px; margin-bottom: 18px;
+}
+.card h2 { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
+.card .cardsub { color: var(--text-secondary); font-size: 12.5px; margin-bottom: 12px; }
+.chartbox { width: 100%; overflow-x: auto; }
+svg { display: block; }
+svg text { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--muted); }
+svg .axislabel { fill: var(--text-secondary); }
+svg .endlabel { font-size: 11px; font-weight: 560; }
+
+.legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 10px 0 0; }
+.legend .item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+.legend .key { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--grid); }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--text-secondary); font-weight: 560; font-size: 12px; }
+td.num { font-variant-numeric: tabular-nums; }
+tr.total td { font-weight: 620; border-top: 1px solid var(--axis); }
+.tablewrap { overflow-x: auto; }
+
+.tooltip {
+  position: fixed; pointer-events: none; z-index: 20; opacity: 0;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; font-size: 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.14); transition: opacity .08s;
+  max-width: 280px;
+}
+.tooltip .tt-title { font-weight: 600; margin-bottom: 4px; }
+.tooltip .tt-row { display: flex; gap: 10px; justify-content: space-between; }
+.tooltip .tt-row span:last-child { font-variant-numeric: tabular-nums; }
+
+.slider-row { display: flex; align-items: center; gap: 12px; }
+.slider-row input[type=range] { flex: 1; accent-color: var(--s1); }
+.slider-row .stamp { font-variant-numeric: tabular-nums; color: var(--text-secondary); min-width: 74px; }
+.empty { color: var(--muted); padding: 28px 0; text-align: center; }
+footer { color: var(--muted); font-size: 12px; margin-top: 28px; line-height: 1.7; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Kernels in the Ubuntu archive</h1>
+  <div class="sub" id="generated"></div>
+  <div class="spacer"></div>
+  <button class="plain" id="themebtn" type="button">Theme</button>
+</header>
+
+<div class="tiles">
+  <div class="tile">
+    <div class="label">KERNEL PACKAGES</div>
+    <div class="value" id="tile-kernel">–</div>
+    <div class="note" id="tile-kernel-note"></div>
+  </div>
+  <div class="tile">
+    <div class="label">EVERYTHING ELSE</div>
+    <div class="value" id="tile-other">–</div>
+    <div class="note" id="tile-other-note"></div>
+  </div>
+  <div class="tile">
+    <div class="label">KERNEL SHARE</div>
+    <div class="value" id="tile-share">–</div>
+    <div class="note" id="tile-share-note"></div>
+  </div>
+</div>
+
+<div class="filters" id="filters"></div>
+
+<div class="tabs" role="tablist">
+  <button class="tab" role="tab" data-view="time" aria-selected="true">Over time</button>
+  <button class="tab" role="tab" data-view="breakdown" aria-selected="false">Breakdown</button>
+  <button class="tab" role="tab" data-view="table" aria-selected="false">Table</button>
+</div>
+
+<div id="views"></div>
+
+<footer id="footer"></footer>
+</div>
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const DATA = /*DATA*/null/*DATA*/;
+</script>
+<script>
+"use strict";
+
+const D = DATA.dims;
+const OTHER = D.classes.indexOf(DATA.otherClass);
+const SLOTS = 8;                       // categorical slots; never cycled
+const MAX_LINES = SLOTS;
+
+// Colour follows the entity: a series keeps its slot no matter what else is
+// selected, so filtering never repaints the survivors.
+const seriesColour = i => "var(--s" + ((i % SLOTS) + 1) + ")";
+
+/* ------------------------------------------------------------------ state */
+
+const state = {
+  series: new Set(),
+  arch: new Set(),
+  pocket: new Set(DATA.pockets.map((_, i) => i)),
+  comp: new Set(D.components.map((_, i) => i)),
+  metric: "size",
+  view: "time",
+  snap: D.snapshots.length - 1,
+};
+
+// Default to whatever is alive at the most recent snapshot, capped at the
+// number of colours we have.
+(function initialSelection() {
+  const last = D.snapshots.length - 1;
+  const alive = new Set();
+  const rows = DATA.byClass.rows;
+  for (let i = 0; i < rows.length; i += 9) {
+    if (rows[i] === last) alive.add(rows[i + 1]);
+  }
+  const picked = [...alive].sort((a, b) => b - a).slice(0, MAX_LINES);
+  picked.forEach(s => state.series.add(s));
+  if (!state.series.size) D.series.forEach((_, i) => state.series.add(i));
+  D.arches.forEach((_, i) => state.arch.add(i));
+})();
+
+/* -------------------------------------------------------------- formatting */
+
+function bytes(n) {
+  const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+  let u = 0;
+  while (Math.abs(n) >= 1024 && u < units.length - 1) { n /= 1024; u++; }
+  return (n >= 100 || u === 0 ? n.toFixed(0) : n.toFixed(1)) + " " + units[u];
+}
+function pct(n) { return (n * 100).toFixed(1) + "%"; }
+function count(n) { return n.toLocaleString(); }
+function stamp(s) { return s.slice(0, 4) + "-" + s.slice(4, 6) + "-" + s.slice(6, 8); }
+function shortStamp(s) { return s.slice(0, 4) + "-" + s.slice(4, 6); }
+
+/* -------------------------------------------------------------- scanning */
+
+function pocketMask() {
+  let m = 0;
+  for (const p of state.pocket) m |= 1 << p;
+  return m;
+}
+const metricIdx = () => (state.metric === "size" ? 7 : 8);
+
+// A row's mask is every pocket the file appears in; it is included when the
+// selection touches any of them, and counted once. That is exactly the union
+// of the selected pockets, which is what the archive holds on disk.
+function scanClass(fn) {
+  const rows = DATA.byClass.rows, pm = pocketMask(), vi = metricIdx();
+  for (let i = 0; i < rows.length; i += 9) {
+    if (!(rows[i + 4] & pm)) continue;
+    if (!state.series.has(rows[i + 1])) continue;
+    if (!state.arch.has(rows[i + 2])) continue;
+    if (!state.comp.has(rows[i + 3])) continue;
+    fn(rows[i], rows[i + 1], rows[i + 2], rows[i + 5], rows[i + 6], rows[i + vi]);
+  }
+}
+
+function scanFlavour(fn) {
+  const rows = DATA.byFlavour.rows, pm = pocketMask();
+  const vi = metricIdx() - 1;   // stride 8: count at 5, size 6, isize 7
+  for (let i = 0; i < rows.length; i += 8) {
+    if (!(rows[i + 3] & pm)) continue;
+    if (!state.series.has(rows[i + 1])) continue;
+    if (!state.arch.has(rows[i + 2])) continue;
+    fn(rows[i], rows[i + 1], rows[i + 2], rows[i + 4], rows[i + 5], rows[i + vi]);
+  }
+}
+
+/** kernel/total bytes per (snapshot, series). */
+function timeline() {
+  const out = new Map();      // series -> array indexed by snapshot
+  const totals = D.snapshots.map(() => ({ kernel: 0, total: 0, n: 0, kn: 0 }));
+  scanClass((snap, ser, arch, cls, n, v) => {
+    let per = out.get(ser);
+    if (!per) { per = D.snapshots.map(() => null); out.set(ser, per); }
+    let cell = per[snap];
+    if (!cell) cell = per[snap] = { kernel: 0, total: 0, n: 0, kn: 0 };
+    cell.total += v;
+    cell.n += n;
+    totals[snap].total += v;
+    totals[snap].n += n;
+    if (cls !== OTHER) {
+      cell.kernel += v;
+      cell.kn += n;
+      totals[snap].kernel += v;
+      totals[snap].kn += n;
+    }
+  });
+  return { perSeries: out, totals };
+}
+
+/* ---------------------------------------------------------------- svg bits */
+
+const NS = "http://www.w3.org/2000/svg";
+function el(name, attrs, parent) {
+  const node = document.createElementNS(NS, name);
+  for (const k in attrs) node.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(node);
+  return node;
+}
+
+/** Bar anchored at the baseline with only its data end rounded. */
+function barPath(x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w));
+  return "M" + x + "," + y +
+         "h" + (w - r) + "a" + r + "," + r + " 0 0 1 " + r + "," + r +
+         "v" + (h - 2 * r) + "a" + r + "," + r + " 0 0 1 " + (-r) + "," + r +
+         "h" + (r - w) + "z";
+}
+
+/** Nice round tick values covering 0..max. */
+function ticks(max, want) {
+  if (max <= 0) return [0];
+  const raw = max / want;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw) || mag * 10;
+  const out = [];
+  for (let v = 0; v <= max + step * 0.001; v += step) out.push(v);
+  return out;
+}
+
+const tooltip = document.getElementById("tooltip");
+function showTip(html, x, y) {
+  tooltip.innerHTML = html;
+  tooltip.style.opacity = "1";
+  const box = tooltip.getBoundingClientRect();
+  let left = x + 14, top = y + 14;
+  if (left + box.width > window.innerWidth - 8) left = x - box.width - 14;
+  if (top + box.height > window.innerHeight - 8) top = y - box.height - 14;
+  tooltip.style.left = Math.max(8, left) + "px";
+  tooltip.style.top = Math.max(8, top) + "px";
+}
+function hideTip() { tooltip.style.opacity = "0"; }
+
+/* -------------------------------------------------------------- line chart */
+
+function lineChart(host, opts) {
+  const width = Math.max(560, host.clientWidth || 900);
+  const height = opts.height || 300;
+  const pad = { top: 12, right: 96, bottom: 30, left: 62 };
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const svg = el("svg", { width, height, viewBox: "0 0 " + width + " " + height,
+                          role: "img", "aria-label": opts.title || "chart" });
+
+  const xs = opts.x;
+  const maxY = Math.max(opts.minMax || 0, ...opts.series.flatMap(
+    s => s.points.map(p => (p === null ? 0 : p))));
+  const yTicks = ticks(maxY, 5);
+  const top = yTicks[yTicks.length - 1] || 1;
+  const X = i => pad.left + (xs.length === 1 ? plotW / 2 : plotW * i / (xs.length - 1));
+  const Y = v => pad.top + plotH - plotH * (v / top);
+
+  for (const t of yTicks) {
+    el("line", { x1: pad.left, x2: pad.left + plotW, y1: Y(t), y2: Y(t),
+                 stroke: "var(--grid)", "stroke-width": 1 }, svg);
+    const label = el("text", { x: pad.left - 8, y: Y(t) + 4, "text-anchor": "end" }, svg);
+    label.textContent = opts.fmt(t);
+  }
+  // x labels: thin them out so they never collide
+  const every = Math.max(1, Math.ceil(xs.length / (plotW / 62)));
+  xs.forEach((label, i) => {
+    if (i % every && i !== xs.length - 1) return;
+    const t = el("text", { x: X(i), y: height - 10, "text-anchor": "middle" }, svg);
+    t.textContent = label;
+  });
+  el("line", { x1: pad.left, x2: pad.left + plotW, y1: Y(0), y2: Y(0),
+               stroke: "var(--axis)", "stroke-width": 1 }, svg);
+
+  for (const s of opts.series) {
+    let d = "", pen = false;
+    s.points.forEach((v, i) => {
+      if (v === null) { pen = false; return; }
+      d += (pen ? "L" : "M") + X(i) + "," + Y(v);
+      pen = true;
+    });
+    if (!d) continue;
+    el("path", { d, fill: "none", stroke: s.colour, "stroke-width": 2,
+                 "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+    // direct label at the last real point
+    let last = -1;
+    s.points.forEach((v, i) => { if (v !== null) last = i; });
+    if (last >= 0) {
+      el("circle", { cx: X(last), cy: Y(s.points[last]), r: 3.5, fill: s.colour,
+                     stroke: "var(--surface)", "stroke-width": 2 }, svg);
+      const t = el("text", { x: X(last) + 9, y: Y(s.points[last]) + 4,
+                             class: "endlabel", fill: s.colour }, svg);
+      t.textContent = s.name;
+    }
+  }
+
+  // crosshair + tooltip
+  const hair = el("line", { y1: pad.top, y2: pad.top + plotH, stroke: "var(--axis)",
+                            "stroke-width": 1, opacity: 0 }, svg);
+  const hit = el("rect", { x: pad.left, y: pad.top, width: plotW, height: plotH,
+                           fill: "transparent" }, svg);
+  hit.addEventListener("mousemove", ev => {
+    const box = svg.getBoundingClientRect();
+    const rel = (ev.clientX - box.left - pad.left) / (plotW || 1);
+    const i = Math.max(0, Math.min(xs.length - 1, Math.round(rel * (xs.length - 1))));
+    hair.setAttribute("x1", X(i));
+    hair.setAttribute("x2", X(i));
+    hair.setAttribute("opacity", 1);
+    let html = '<div class="tt-title">' + opts.xTitle(i) + "</div>";
+    for (const s of opts.series) {
+      if (s.points[i] === null) continue;
+      html += '<div class="tt-row"><span style="color:' + s.colour + '">●</span>' +
+              "<span>" + s.name + "</span><span>" + opts.fmt(s.points[i]) + "</span></div>";
+    }
+    showTip(html, ev.clientX, ev.clientY);
+  });
+  hit.addEventListener("mouseleave", () => { hair.setAttribute("opacity", 0); hideTip(); });
+
+  host.innerHTML = "";
+  host.appendChild(svg);
+}
+
+/* --------------------------------------------------------------- bar chart */
+
+function barChart(host, opts) {
+  const items = opts.items;
+  if (!items.length) { host.innerHTML = '<div class="empty">Nothing selected.</div>'; return; }
+  const width = Math.max(520, host.clientWidth || 900);
+  const rowH = 26, gap = 2;
+  const pad = { top: 8, right: 120, bottom: 24, left: opts.labelWidth || 150 };
+  const height = pad.top + items.length * rowH + pad.bottom;
+  const plotW = width - pad.left - pad.right;
+  const svg = el("svg", { width, height, viewBox: "0 0 " + width + " " + height,
+                          role: "img", "aria-label": opts.title || "chart" });
+  const max = Math.max(...items.map(d => Math.max(d.value, d.total || 0)));
+  const scale = v => (max > 0 ? plotW * v / max : 0);
+
+  items.forEach((d, i) => {
+    const y = pad.top + i * rowH;
+    const h = rowH - gap * 2;
+    const label = el("text", { x: pad.left - 10, y: y + h / 2 + 4,
+                               "text-anchor": "end", class: "axislabel" }, svg);
+    label.textContent = d.label;
+    if (d.total !== undefined) {
+      el("path", { d: barPath(pad.left, y + gap, Math.max(scale(d.total), 1), h, 4),
+                   fill: "var(--neutral-fill)" }, svg);
+    }
+    el("path", { d: barPath(pad.left, y + gap, Math.max(scale(d.value), 1), h, 4),
+                 fill: d.colour || "var(--s1)" }, svg);
+    const t = el("text", { x: pad.left + Math.max(scale(d.total ?? d.value), 1) + 10,
+                           y: y + h / 2 + 4, class: "axislabel" }, svg);
+    t.textContent = opts.rowLabel(d);
+
+    const hit = el("rect", { x: pad.left, y, width: plotW, height: rowH,
+                             fill: "transparent" }, svg);
+    hit.addEventListener("mousemove", ev => showTip(opts.tip(d), ev.clientX, ev.clientY));
+    hit.addEventListener("mouseleave", hideTip);
+  });
+
+  host.innerHTML = "";
+  host.appendChild(svg);
+}
+
+/* ----------------------------------------------------------------- filters */
+
+function chipRow(label, values, selected, onToggle, colourFor) {
+  const row = document.createElement("div");
+  row.className = "frow";
+  const name = document.createElement("div");
+  name.className = "flabel";
+  name.textContent = label;
+  row.appendChild(name);
+  const chips = document.createElement("div");
+  chips.className = "chips";
+  values.forEach((v, i) => {
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.type = "button";
+    b.setAttribute("aria-pressed", selected.has(i) ? "true" : "false");
+    if (colourFor) {
+      const sw = document.createElement("span");
+      sw.className = "swatch";
+      sw.style.background = colourFor(i);
+      b.appendChild(sw);
+    }
+    b.appendChild(document.createTextNode(v));
+    b.addEventListener("click", () => { onToggle(i); render(); });
+    chips.appendChild(b);
+  });
+  const all = document.createElement("button");
+  all.className = "chip allnone";
+  all.type = "button";
+  all.textContent = selected.size === values.length ? "none" : "all";
+  all.addEventListener("click", () => {
+    if (selected.size === values.length) selected.clear();
+    else values.forEach((_, i) => selected.add(i));
+    render();
+  });
+  chips.appendChild(all);
+  row.appendChild(chips);
+  return row;
+}
+
+function toggler(set) {
+  return i => { if (set.has(i)) set.delete(i); else set.add(i); };
+}
+
+function buildFilters() {
+  const host = document.getElementById("filters");
+  host.innerHTML = "";
+  host.appendChild(chipRow("Series", D.series, state.series, toggler(state.series),
+                           i => seriesColour(i)));
+  host.appendChild(chipRow("Arch", D.arches, state.arch, toggler(state.arch)));
+  host.appendChild(chipRow("Pocket", DATA.pockets, state.pocket, toggler(state.pocket)));
+  host.appendChild(chipRow("Component", D.components, state.comp, toggler(state.comp)));
+
+  const row = document.createElement("div");
+  row.className = "frow";
+  const lab = document.createElement("div");
+  lab.className = "flabel";
+  lab.textContent = "Measure";
+  row.appendChild(lab);
+  const chips = document.createElement("div");
+  chips.className = "chips";
+  [["size", "Download size"], ["isize", "Installed size"]].forEach(pair => {
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.type = "button";
+    b.textContent = pair[1];
+    b.setAttribute("aria-pressed", state.metric === pair[0] ? "true" : "false");
+    b.addEventListener("click", () => { state.metric = pair[0]; render(); });
+    chips.appendChild(b);
+  });
+  row.appendChild(chips);
+  host.appendChild(row);
+}
+
+/* ------------------------------------------------------------------- views */
+
+/** Series that can be drawn without two of them sharing a colour slot. */
+function drawableSeries() {
+  const sel = [...state.series].sort((a, b) => a - b);
+  return sel.filter(s => s < SLOTS || !state.series.has(s - SLOTS));
+}
+
+function viewTime(host, tl) {
+  const drawn = drawableSeries();
+  const dropped = state.series.size - drawn.length;
+  const xs = D.snapshots.map(shortStamp);
+
+  const shareCard = card(host, "Kernel share of the archive",
+    "Kernel bytes as a percentage of every selected package, at each snapshot.");
+  lineChart(shareCard, {
+    x: xs,
+    xTitle: i => stamp(D.snapshots[i]),
+    fmt: v => v.toFixed(0) + "%",
+    minMax: 10,
+    series: drawn.map(s => ({
+      name: D.series[s],
+      colour: seriesColour(s),
+      points: (tl.perSeries.get(s) || []).map(
+        c => (c && c.total ? 100 * c.kernel / c.total : null)),
+    })),
+  });
+  legend(shareCard, drawn.map(s => [D.series[s], seriesColour(s)]));
+  if (dropped) {
+    note(shareCard, dropped + " more selected series are not drawn: there are " +
+         "only " + SLOTS + " colour slots and reusing one would be ambiguous. " +
+         "The table view has every series.");
+  }
+
+  const absCard = card(host, "Kernel bytes",
+    "The same selection in absolute terms, so a rising share can be told apart " +
+    "from a shrinking archive.");
+  lineChart(absCard, {
+    x: xs,
+    xTitle: i => stamp(D.snapshots[i]),
+    fmt: bytes,
+    series: drawn.map(s => ({
+      name: D.series[s],
+      colour: seriesColour(s),
+      points: (tl.perSeries.get(s) || []).map(c => (c ? c.kernel : null)),
+    })),
+  });
+  legend(absCard, drawn.map(s => [D.series[s], seriesColour(s)]));
+}
+
+function viewBreakdown(host) {
+  const snap = state.snap;
+  const chooser = card(host, "Snapshot", "");
+  const row = document.createElement("div");
+  row.className = "slider-row";
+  const range = document.createElement("input");
+  range.type = "range";
+  range.min = 0;
+  range.max = D.snapshots.length - 1;
+  range.value = snap;
+  const label = document.createElement("div");
+  label.className = "stamp";
+  label.textContent = stamp(D.snapshots[snap]);
+  range.addEventListener("input", () => {
+    state.snap = +range.value;
+    label.textContent = stamp(D.snapshots[state.snap]);
+    render();
+  });
+  row.appendChild(label);
+  row.appendChild(range);
+  chooser.appendChild(row);
+
+  const byClass = new Map(), byArch = new Map(), byFlav = new Map();
+  scanClass((s, ser, arch, cls, n, v) => {
+    if (s !== snap) return;
+    let a = byArch.get(arch);
+    if (!a) byArch.set(arch, a = { kernel: 0, total: 0, n: 0 });
+    a.total += v;
+    if (cls !== OTHER) {
+      a.kernel += v;
+      a.n += n;
+      const c = byClass.get(cls) || { v: 0, n: 0 };
+      c.v += v; c.n += n;
+      byClass.set(cls, c);
+    }
+  });
+  scanFlavour((s, ser, arch, flav, n, v) => {
+    if (s !== snap) return;
+    const f = byFlav.get(flav) || { v: 0, n: 0 };
+    f.v += v; f.n += n;
+    byFlav.set(flav, f);
+  });
+
+  const archCard = card(host, "Kernel share by architecture",
+    "Solid bar: kernel packages. Faint bar behind it: everything published for " +
+    "that architecture. 'all' and 'source' are rows of their own because the " +
+    "archive keeps one copy of each, not one per architecture.");
+  barChart(archCard, {
+    labelWidth: 92,
+    items: [...byArch.entries()]
+      .sort((a, b) => b[1].total - a[1].total)
+      .map(entry => ({
+        label: D.arches[entry[0]], value: entry[1].kernel,
+        total: entry[1].total, n: entry[1].n,
+      })),
+    rowLabel: d => pct(d.total ? d.value / d.total : 0) + " of " + bytes(d.total),
+    tip: d => '<div class="tt-title">' + d.label + "</div>" +
+      '<div class="tt-row"><span>kernel</span><span>' + bytes(d.value) + "</span></div>" +
+      '<div class="tt-row"><span>everything</span><span>' + bytes(d.total) + "</span></div>" +
+      '<div class="tt-row"><span>share</span><span>' +
+      pct(d.total ? d.value / d.total : 0) + "</span></div>" +
+      '<div class="tt-row"><span>kernel packages</span><span>' + count(d.n) + "</span></div>",
+  });
+  legend(archCard, [["kernel packages", "var(--s1)"],
+                    ["everything published", "var(--neutral-fill)"]]);
+
+  const clsCard = card(host, "Where the kernel bytes go",
+    "Kernel packages by kind. 'objects' is linux-objects-* from " +
+    "linux-restricted-modules, the pre-built third-party drivers.");
+  barChart(clsCard, {
+    labelWidth: 130,
+    items: [...byClass.entries()].sort((a, b) => b[1].v - a[1].v)
+      .map(entry => ({ label: D.classes[entry[0]], value: entry[1].v, n: entry[1].n })),
+    rowLabel: d => bytes(d.value),
+    tip: d => '<div class="tt-title">' + d.label + "</div>" +
+      '<div class="tt-row"><span>size</span><span>' + bytes(d.value) + "</span></div>" +
+      '<div class="tt-row"><span>packages</span><span>' + count(d.n) + "</span></div>",
+  });
+
+  const flavCard = card(host, "By kernel flavour",
+    "Sources collapsed to the kernel they belong to, so linux-signed-aws and " +
+    "linux-restricted-modules-aws count towards linux-aws.");
+  barChart(flavCard, {
+    labelWidth: 190,
+    items: [...byFlav.entries()].sort((a, b) => b[1].v - a[1].v)
+      .map(entry => ({ label: D.flavours[entry[0]], value: entry[1].v, n: entry[1].n })),
+    rowLabel: d => bytes(d.value),
+    tip: d => '<div class="tt-title">' + d.label + "</div>" +
+      '<div class="tt-row"><span>size</span><span>' + bytes(d.value) + "</span></div>" +
+      '<div class="tt-row"><span>packages</span><span>' + count(d.n) + "</span></div>",
+  });
+}
+
+function viewTable(host, tl) {
+  const c = card(host, "Kernel share over time",
+    "Every selected series, including any the charts could not colour.");
+  const wrap = document.createElement("div");
+  wrap.className = "tablewrap";
+  const sel = [...state.series].sort((a, b) => a - b);
+  let html = "<table><thead><tr><th>Snapshot</th>";
+  for (const s of sel) html += "<th>" + D.series[s] + "</th>";
+  html += "<th>all selected</th></tr></thead><tbody>";
+  D.snapshots.forEach((snapshot, i) => {
+    if (!tl.totals[i].total) return;
+    html += "<tr><td>" + stamp(snapshot) + "</td>";
+    for (const s of sel) {
+      const cell = (tl.perSeries.get(s) || [])[i];
+      html += '<td class="num">' +
+        (cell && cell.total ? pct(cell.kernel / cell.total) : "-") + "</td>";
+    }
+    html += '<td class="num">' + pct(tl.totals[i].kernel / tl.totals[i].total) +
+            "</td></tr>";
+  });
+  html += "</tbody></table>";
+  wrap.innerHTML = html;
+  c.appendChild(wrap);
+
+  const c2 = card(host, "One snapshot in full",
+    "The bytes behind the breakdown charts, at " + stamp(D.snapshots[state.snap]) + ".");
+  const rows = new Map();
+  scanClass((s, ser, arch, cls, n, v) => {
+    if (s !== state.snap) return;
+    const key = D.series[ser] + " " + D.arches[arch];
+    const r = rows.get(key) || { kernel: 0, total: 0, kn: 0, n: 0 };
+    r.total += v; r.n += n;
+    if (cls !== OTHER) { r.kernel += v; r.kn += n; }
+    rows.set(key, r);
+  });
+  let h2 = "<table><thead><tr><th>Series</th><th>Arch</th><th>Kernel</th>" +
+           "<th>Total</th><th>Share</th><th>Kernel pkgs</th><th>All pkgs</th>" +
+           "</tr></thead><tbody>";
+  const totals = { kernel: 0, total: 0, kn: 0, n: 0 };
+  [...rows.entries()].sort().forEach(entry => {
+    const parts = entry[0].split(" "), r = entry[1];
+    totals.kernel += r.kernel; totals.total += r.total;
+    totals.kn += r.kn; totals.n += r.n;
+    h2 += "<tr><td>" + parts[0] + "</td><td>" + parts[1] + '</td><td class="num">' +
+      bytes(r.kernel) + '</td><td class="num">' + bytes(r.total) +
+      '</td><td class="num">' + pct(r.total ? r.kernel / r.total : 0) +
+      '</td><td class="num">' + count(r.kn) + '</td><td class="num">' +
+      count(r.n) + "</td></tr>";
+  });
+  h2 += '<tr class="total"><td>total</td><td></td><td class="num">' +
+    bytes(totals.kernel) + '</td><td class="num">' + bytes(totals.total) +
+    '</td><td class="num">' + pct(totals.total ? totals.kernel / totals.total : 0) +
+    '</td><td class="num">' + count(totals.kn) + '</td><td class="num">' +
+    count(totals.n) + "</td></tr></tbody></table>";
+  const wrap2 = document.createElement("div");
+  wrap2.className = "tablewrap";
+  wrap2.innerHTML = h2;
+  c2.appendChild(wrap2);
+}
+
+/* ------------------------------------------------------------ card helpers */
+
+function card(host, title, sub) {
+  const c = document.createElement("div");
+  c.className = "card";
+  const h = document.createElement("h2");
+  h.textContent = title;
+  c.appendChild(h);
+  if (sub) {
+    const s = document.createElement("div");
+    s.className = "cardsub";
+    s.textContent = sub;
+    c.appendChild(s);
+  }
+  const body = document.createElement("div");
+  body.className = "chartbox";
+  c.appendChild(body);
+  host.appendChild(c);
+  return body;
+}
+
+function legend(host, entries) {
+  if (entries.length < 2) return;   // one series is named by its own end label
+  const box = document.createElement("div");
+  box.className = "legend";
+  for (const entry of entries) {
+    const item = document.createElement("span");
+    item.className = "item";
+    const key = document.createElement("span");
+    key.className = "key";
+    key.style.background = entry[1];
+    item.appendChild(key);
+    item.appendChild(document.createTextNode(entry[0]));
+    box.appendChild(item);
+  }
+  host.parentNode.appendChild(box);
+}
+
+function note(host, text) {
+  const n = document.createElement("div");
+  n.className = "cardsub";
+  n.style.marginTop = "10px";
+  n.textContent = text;
+  host.parentNode.appendChild(n);
+}
+
+/* ------------------------------------------------------------------ render */
+
+function render() {
+  buildFilters();
+  const tl = timeline();
+  const cur = tl.totals[state.snap] || { kernel: 0, total: 0, kn: 0, n: 0 };
+  document.getElementById("tile-kernel").textContent = bytes(cur.kernel);
+  document.getElementById("tile-kernel-note").textContent =
+    count(cur.kn) + " packages at " + stamp(D.snapshots[state.snap]);
+  document.getElementById("tile-other").textContent = bytes(cur.total - cur.kernel);
+  document.getElementById("tile-other-note").textContent =
+    count(cur.n - cur.kn) + " packages";
+  document.getElementById("tile-share").textContent =
+    cur.total ? pct(cur.kernel / cur.total) : "-";
+  document.getElementById("tile-share-note").textContent =
+    "of " + bytes(cur.total) + " selected";
+
+  document.querySelectorAll(".tab").forEach(t =>
+    t.setAttribute("aria-selected", t.dataset.view === state.view ? "true" : "false"));
+
+  const host = document.getElementById("views");
+  host.innerHTML = "";
+  if (!state.series.size || !state.arch.size || !state.pocket.size || !state.comp.size) {
+    host.innerHTML = '<div class="card"><div class="empty">' +
+      "Select at least one of each filter.</div></div>";
+    return;
+  }
+  if (state.view === "time") viewTime(host, tl);
+  else if (state.view === "breakdown") viewBreakdown(host);
+  else viewTable(host, tl);
+}
+
+document.querySelectorAll(".tab").forEach(t =>
+  t.addEventListener("click", () => { state.view = t.dataset.view; render(); }));
+
+document.getElementById("themebtn").addEventListener("click", () => {
+  const root = document.documentElement;
+  const dark = getComputedStyle(root).getPropertyValue("--page").trim() === "#0d0d0d";
+  root.setAttribute("data-theme", dark ? "light" : "dark");
+  render();
+});
+
+document.getElementById("generated").textContent =
+  "snapshot.ubuntu.com | " + stamp(D.snapshots[0]) + " to " +
+  stamp(D.snapshots[D.snapshots.length - 1]) + " | built " + DATA.generated;
+
+document.getElementById("footer").innerHTML =
+  "A package counts as a kernel package when its source ships a binary that " +
+  "<code>Provides: linux-image</code>, plus any " +
+  "<code>linux-objects-*-&lt;kver&gt;</code> built for a kernel version seen in " +
+  "those images - the same rule as the <code>kernel-sizes</code> script.<br>" +
+  "A file published to several pockets is counted once, so the totals are what " +
+  "the archive actually stores rather than the sum of the indexes.";
+
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(render, 120);
+});
+
+render();
+</script>
+</body>
+</html>

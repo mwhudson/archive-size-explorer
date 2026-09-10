@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+"""Explore how much of the Ubuntu archive is taken up by kernels.
+
+Reads binary and source indexes straight from the Ubuntu snapshot service, so
+it can look at any point in time since 2023-03-01 rather than just whatever
+apt happens to have locally.  Everything it downloads is reduced and cached, so
+the expensive first run is the only expensive run.
+
+  kernel-sizes-explorer build -o kernels.html     # fetch + write the page
+  kernel-sizes-explorer report -s noble           # text summary of one snapshot
+  kernel-sizes-explorer cache                     # what the cache is holding
+
+The output of "build" is a single self-contained HTML file: open it with
+file://, no server needed.
+"""
+
+import argparse
+import datetime
+import json
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from kernel_sizes import (  # noqa: E402
+    Builder, Cache, Fetcher, CANDIDATE_SERIES, DEFAULT_COMPONENTS, OTHER,
+    POCKETS, default_cache_dir, log, snapshots,
+)
+
+
+def add_common(parser):
+    parser.add_argument("-s", "--series", action="append", metavar="SERIES",
+                        help="series to include; repeatable "
+                             "(default: every series present in the window)")
+    parser.add_argument("-a", "--arch", action="append", metavar="ARCH",
+                        help="binary architecture; repeatable "
+                             "(default: every arch each suite advertises)")
+    parser.add_argument("-p", "--pocket", action="append", metavar="POCKET",
+                        choices=POCKETS,
+                        help="pocket; repeatable (default: all of %s)"
+                             % ", ".join(POCKETS))
+    parser.add_argument("-c", "--component", action="append", metavar="COMP",
+                        choices=DEFAULT_COMPONENTS,
+                        help="component; repeatable (default: all four)")
+    parser.add_argument("--no-sources", action="store_true",
+                        help="skip source packages (they show up as arch "
+                             "'source')")
+    parser.add_argument("--cache", default=default_cache_dir(), metavar="DIR",
+                        help="cache directory (default: %(default)s)")
+    parser.add_argument("-j", "--jobs", type=int, default=8, metavar="N",
+                        help="parallel downloads (default: %(default)s)")
+    parser.add_argument("--offline", action="store_true",
+                        help="use only what is already cached; skip anything "
+                             "that would need the network")
+
+
+def add_window(parser):
+    parser.add_argument("--from", dest="from_", default=None, metavar="YYYY-MM",
+                        help="first snapshot (default: 2023-03, the earliest "
+                             "the snapshot service has)")
+    parser.add_argument("--to", default=None, metavar="YYYY-MM",
+                        help="last snapshot (default: today)")
+    parser.add_argument("--every", default="month", metavar="SPEC",
+                        help="'month' (default), 'week', or a number of days")
+
+
+def make_builder(args):
+    cache = Cache(args.cache)
+    fetcher = Fetcher(jobs=args.jobs)
+    builder = Builder(cache, fetcher,
+                      components=args.component,
+                      arches=args.arch,
+                      pockets=args.pocket,
+                      sources=not args.no_sources)
+    if args.offline:
+        builder.fetcher = OfflineFetcher()
+    return builder
+
+
+class OfflineFetcher:
+    jobs = 1
+    bytes_downloaded = 0
+
+    def get(self, url, tolerate_404=True):
+        raise SkipOffline(url)
+
+
+class SkipOffline(Exception):
+    pass
+
+
+def collect(builder, snaps, series_list, progress=True):
+    """Aggregate every (snapshot, series) pair we can, into flat tables."""
+    byclass = {}
+    byflavour = {}
+    seen_series = set()
+    started = time.time()
+    for i, snap in enumerate(snaps, 1):
+        for series in series_list:
+            try:
+                result = builder.build_series(snap, series)
+            except SkipOffline:
+                continue
+            if result is None:
+                continue
+            seen_series.add(series)
+            cls_table, flav_table = result
+            for (arch, comp, mask, cls), acc in cls_table.items():
+                byclass[(snap, series, arch, comp, mask, cls)] = acc
+            for (arch, mask, flav), acc in flav_table.items():
+                byflavour[(snap, series, arch, mask, flav)] = acc
+        if progress:
+            elapsed = time.time() - started
+            log("[%d/%d] %s  %d blobs fetched (%.1f MiB), %d cached, %.0fs"
+                % (i, len(snaps), snap, builder.downloads,
+                   builder.fetcher.bytes_downloaded / 2 ** 20,
+                   builder.hits, elapsed))
+    return byclass, byflavour, sorted(seen_series)
+
+
+def encode(byclass, byflavour, snaps, series_list):
+    """Pack the tables into dimension dictionaries plus flat integer rows."""
+    def index(values):
+        ordered = sorted(values)
+        return ordered, {v: i for i, v in enumerate(ordered)}
+
+    used_snaps = sorted({k[0] for k in byclass})
+    snap_i = {v: i for i, v in enumerate(used_snaps)}
+    series, series_i = index({k[1] for k in byclass})
+    arches, arch_i = index({k[2] for k in byclass} | {k[2] for k in byflavour})
+    comps, comp_i = index({k[3] for k in byclass})
+    classes, class_i = index({k[5] for k in byclass})
+    flavours, flav_i = index({k[4] for k in byflavour})
+
+    cls_rows = []
+    for (snap, ser, arch, comp, mask, cls), acc in sorted(byclass.items()):
+        cls_rows += [snap_i[snap], series_i[ser], arch_i[arch], comp_i[comp],
+                     mask, class_i[cls], acc[0], acc[1], acc[2]]
+    flav_rows = []
+    for (snap, ser, arch, mask, flav), acc in sorted(byflavour.items()):
+        flav_rows += [snap_i[snap], series_i[ser], arch_i[arch], mask,
+                      flav_i[flav], acc[0], acc[1], acc[2]]
+
+    return {
+        "generated": datetime.datetime.now(
+            datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ"),
+        "otherClass": OTHER,
+        "pockets": POCKETS,
+        "dims": {
+            "snapshots": used_snaps,
+            "series": series,
+            "arches": arches,
+            "components": comps,
+            "classes": classes,
+            "flavours": flavours,
+        },
+        "byClass": {"stride": 9, "rows": cls_rows},
+        "byFlavour": {"stride": 8, "rows": flav_rows},
+    }
+
+
+def cmd_build(args):
+    builder = make_builder(args)
+    snaps = snapshots(args.from_, args.to, args.every)
+    series_list = args.series or CANDIDATE_SERIES
+    log("%d snapshot(s) x %d candidate series; cache at %s"
+        % (len(snaps), len(series_list), args.cache))
+
+    byclass, byflavour, seen = collect(builder, snaps, series_list)
+    if not byclass:
+        log("nothing collected -- wrong window, or an --offline run with a "
+            "cold cache")
+        return 1
+    data = encode(byclass, byflavour, snaps, series_list)
+    log("collected %d class rows, %d flavour rows across %s"
+        % (len(data["byClass"]["rows"]) // 9,
+           len(data["byFlavour"]["rows"]) // 8, ", ".join(seen)))
+
+    payload = json.dumps(data, separators=(",", ":"))
+    if args.json:
+        with open(args.json, "w") as f:
+            f.write(payload)
+        log("wrote %s (%.1f MiB)" % (args.json, len(payload) / 2 ** 20))
+    if args.output:
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "template.html")) as f:
+            template = f.read()
+        html = template.replace("/*DATA*/null/*DATA*/", payload)
+        with open(args.output, "w") as f:
+            f.write(html)
+        log("wrote %s (%.1f MiB)" % (args.output, len(html) / 2 ** 20))
+    return 0
+
+
+def human(n):
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if abs(n) < 1024 or unit == "TiB":
+            return "%.1f %s" % (n, unit)
+        n /= 1024.0
+
+
+def cmd_report(args):
+    builder = make_builder(args)
+    snaps = snapshots(args.snapshot, args.snapshot, "month") \
+        if args.snapshot else snapshots(None, None, "month")[-1:]
+    series_list = args.series or CANDIDATE_SERIES
+    byclass, _flav, seen = collect(builder, snaps, series_list, progress=False)
+
+    per = {}
+    for (snap, ser, arch, _comp, _mask, cls), acc in byclass.items():
+        slot = per.setdefault((snap, ser, arch), [0, 0, 0, 0])
+        slot[0] += acc[1]
+        slot[1] += acc[0]
+        if cls != OTHER:
+            slot[2] += acc[1]
+            slot[3] += acc[0]
+    grand = [0, 0]
+    for key in sorted(per):
+        total, ntotal, kern, nkern = per[key]
+        grand[0] += total
+        grand[1] += kern
+        print("%s %-9s %-8s  kernel %10s / %10s  %5.1f%%  (%d/%d pkgs)"
+              % (key[0][:8], key[1], key[2], human(kern), human(total),
+                 100.0 * kern / total if total else 0, nkern, ntotal))
+    if grand[0]:
+        print("%-38s  %10s / %10s  %5.1f%%"
+              % ("TOTAL", human(grand[1]), human(grand[0]),
+                 100.0 * grand[1] / grand[0]))
+    return 0
+
+
+def cmd_cache(args):
+    cache = Cache(args.cache)
+    files, total = cache.usage()
+    print("%s: %d files, %s" % (args.cache, files, human(total)))
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("build", help="fetch and write the interactive page")
+    add_common(p)
+    add_window(p)
+    p.add_argument("-o", "--output", default="kernels.html", metavar="FILE",
+                   help="HTML output (default: %(default)s)")
+    p.add_argument("--json", metavar="FILE",
+                   help="also write the raw dataset here")
+    p.set_defaults(func=cmd_build)
+
+    p = sub.add_parser("report", help="text summary of a single snapshot")
+    add_common(p)
+    p.add_argument("--snapshot", metavar="YYYY-MM",
+                   help="which snapshot (default: the most recent month)")
+    p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("cache", help="show what the cache is holding")
+    p.add_argument("--cache", default=default_cache_dir(), metavar="DIR")
+    p.set_defaults(func=cmd_cache)
+
+    args = parser.parse_args()
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        log("interrupted; the cache keeps what was already fetched")
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
