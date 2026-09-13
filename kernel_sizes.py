@@ -599,8 +599,11 @@ class Builder:
                         break
         return wanted if found else None
 
-    def build_series(self, snapshot, series):
-        """Fetch what is missing and aggregate one (snapshot, series)."""
+    def load_rows(self, snapshot, series):
+        """Fetch what is missing and return one (snapshot, series)'s rows.
+
+        Returns None when the series does not exist at this snapshot.
+        """
         wanted = self.plan(snapshot, series)
         if wanted is None:
             return None
@@ -623,4 +626,31 @@ class Builder:
                 for c, p, path, sha, _algo in wanted:
                     if c == component and p == pocket:
                         load_slim(self.cache, sha, component, bit[pocket], rows)
+        return rows
+
+    def build_series(self, snapshot, series):
+        """Fetch what is missing and aggregate one (snapshot, series)."""
+        rows = self.load_rows(snapshot, series)
+        if rows is None:
+            return None
         return aggregate(rows)
+
+
+def merge_rows(into, rows):
+    """Fold one series' rows into an archive-wide (pkg, ver, arch) map.
+
+    Ubuntu has a single pool/ shared by every series, so the same package
+    version referenced by two series is one file on disk.  Summing per-series
+    totals double-counts those -- as of 2026-09 by 12.6%, some 626k files,
+    mostly Architecture: all and source packages that have not changed in
+    years.  Folding them into one map here is what makes an archive-wide total
+    mean anything.
+    """
+    for key, row in rows.items():
+        cur = into.get(key)
+        if cur is None:
+            into[key] = Row(row.ver, row.arch, row.size, row.isize, row.src,
+                            row.prov, row.mask, row.component)
+        else:
+            cur.mask |= row.mask
+            cur.prov = cur.prov or row.prov

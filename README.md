@@ -13,6 +13,10 @@ it to someone, stick it on people.canonical.com. Series, architecture, pocket
 and component are all filters in the page, so you explore by clicking rather
 than by re-running the script.
 
+There are two things it will tell you: how much of the archive is kernels, and
+how big the archive is. The **Whole archive** tab tracks the total over time
+(and the kernel share of it); the other tabs slice it by series.
+
 ## Using it
 
 ```console
@@ -38,6 +42,17 @@ $ ./kernel-sizes-explorer report -s noble --snapshot 2025-09
 20250901 noble     amd64     kernel  256.9 GiB /  371.1 GiB   69.2%  (9687/60933 pkgs)
 20250901 noble     arm64     kernel  366.1 GiB /  465.3 GiB   78.7%  (11945/63616 pkgs)
 ...
+```
+
+Across every series it also prints the archive-wide total, which is not the sum
+of the per-series ones — see below:
+
+```console
+$ ./kernel-sizes-explorer report --snapshot 2026-09
+...
+sum of series                              4.0 TiB /   10.5 TiB   38.1%
+whole archive (pool deduped)               4.0 TiB /    9.3 TiB   43.0%
+...files shared between series             1.2 TiB  (12.6% of the archive, ...)
 ```
 
 `--offline` re-aggregates whatever is already cached without touching the
@@ -79,6 +94,19 @@ on `(package, version, architecture)`, which is one row per file in `pool/`.
 Because of that, selecting pockets in the page is a **union**, not a sum: a file
 in both `-updates` and `-security` is included when you tick either, and counted
 once when you tick both.
+
+**Series share one `pool/`, so they do not add up.** There is a single pool for
+the whole archive, and a package version that two series both reference is one
+file on disk. As of 2026-09 that is 626k files — 1.2 TiB, 12.6% of the archive —
+mostly `Architecture: all` and source packages that have not changed in years.
+Adding up per-series totals counts each of those once per series.
+
+The **Whole archive** tab is deduplicated across series and is the number to
+quote for a total; the per-series views sum, because "the size of jammy" is a
+per-series question. The difference is not small: at 2026-09 the sum is 10.5 TiB
+against a real 9.3 TiB, and the kernel share moves from 38.1% to 43.0% — the
+shared files are almost all *not* kernels, so dropping the duplicates makes
+kernels a bigger fraction of what is left.
 
 **`all` and `source` are architectures of their own.** An `Architecture: all`
 package is listed in every `binary-<arch>` index but exists once in the pool, so
@@ -125,3 +153,12 @@ The dataset the page gets is keyed by
 pocket-set is the bitmask of every pocket the file appears in. That is what lets
 the page compute an exact union for any combination of pockets you tick without
 going back to the raw data.
+
+The archive-wide table is the same thing with the series dimension collapsed and
+the deduplication done across every series in the run, which is why it is a
+separate table rather than something the page could add up for itself. Doing the
+same trick for series — a bitmask of which series reference a file — would be
+exact for any subset, but where five pockets give 32 possible masks, twelve
+series give 4096, and the row count goes up accordingly. So the page can dedupe
+across pockets for any selection you like, but across series only for all of
+them at once.

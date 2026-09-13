@@ -176,7 +176,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     <div class="note" id="tile-kernel-note"></div>
   </div>
   <div class="tile">
-    <div class="label">EVERYTHING ELSE</div>
+    <div class="label" id="tile-other-label">EVERYTHING ELSE</div>
     <div class="value" id="tile-other">–</div>
     <div class="note" id="tile-other-note"></div>
   </div>
@@ -193,6 +193,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   <button class="tab" role="tab" data-view="time" aria-selected="true">Over time</button>
   <button class="tab" role="tab" data-view="breakdown" aria-selected="false">Breakdown</button>
   <button class="tab" role="tab" data-view="table" aria-selected="false">Table</button>
+  <button class="tab" role="tab" data-view="archive" aria-selected="false">Whole archive</button>
 </div>
 
 <div id="views"></div>
@@ -277,6 +278,7 @@ function bytes(n) {
 function pct(n) { return (n * 100).toFixed(1) + "%"; }
 function count(n) { return n.toLocaleString(); }
 function stamp(s) { return s.slice(0, 4) + "-" + s.slice(4, 6) + "-" + s.slice(6, 8); }
+function snapDate(s) { return new Date(stamp(s) + "T00:00:00Z"); }
 function shortStamp(s) { return s.slice(0, 4) + "-" + s.slice(4, 6); }
 
 /* -------------------------------------------------------------- scanning */
@@ -648,34 +650,7 @@ function viewTime(host, tl) {
 }
 
 function viewBreakdown(host) {
-  const snap = state.snap;
-  const chooser = card(host, "Snapshot", "");
-  const row = document.createElement("div");
-  row.className = "slider-row";
-  const range = document.createElement("input");
-  range.type = "range";
-  range.min = 0;
-  range.max = D.snapshots.length - 1;
-  range.value = snap;
-  const label = document.createElement("div");
-  label.className = "stamp";
-  label.textContent = stamp(D.snapshots[snap]);
-  row.appendChild(label);
-  row.appendChild(range);
-  chooser.appendChild(row);
-
-  // Redrawing only the charts keeps the range input itself alive, so a drag
-  // survives past its first step.
-  const charts = document.createElement("div");
-  host.appendChild(charts);
-  range.addEventListener("input", () => {
-    state.snap = +range.value;
-    label.textContent = stamp(D.snapshots[state.snap]);
-    updateTiles();
-    charts.innerHTML = "";
-    drawBreakdown(charts);
-  });
-  drawBreakdown(charts);
+  snapshotChooser(host, drawBreakdown);
 }
 
 function drawBreakdown(host) {
@@ -811,6 +786,171 @@ function viewTable(host, tl) {
   c2.appendChild(wrap2);
 }
 
+
+/* --------------------------------------------------------- whole archive */
+
+// Ubuntu has one pool/ for every series, so a package version two series both
+// reference is one file on disk.  These rows were deduped across series at
+// build time; the per-series views cannot be, so they sum instead, and the two
+// totals differ by however much the series share.
+const ARCHIVE = DATA.byArchive || { stride: 8, rows: [] };
+const HAS_ARCHIVE = ARCHIVE.rows.length > 0;
+
+function scanArchive(fn) {
+  const rows = ARCHIVE.rows, pm = pocketMask(), vi = metricIdx() - 1;
+  for (let i = 0; i < rows.length; i += 8) {
+    if (!(rows[i + 3] & pm)) continue;
+    if (!state.arch.has(rows[i + 1])) continue;
+    if (!state.comp.has(rows[i + 2])) continue;
+    fn(rows[i], rows[i + 1], rows[i + 4], rows[i + 5], rows[i + vi]);
+  }
+}
+
+function archiveTimeline() {
+  const out = D.snapshots.map(() => null);
+  scanArchive((snap, arch, cls, n, v) => {
+    let cell = out[snap];
+    if (!cell) cell = out[snap] = { kernel: 0, total: 0, n: 0, kn: 0 };
+    cell.total += v;
+    cell.n += n;
+    if (cls !== OTHER) { cell.kernel += v; cell.kn += n; }
+  });
+  return out;
+}
+
+/** A range input over the snapshots that survives its own redraws. */
+function snapshotChooser(host, redraw) {
+  const chooser = card(host, "Snapshot", "");
+  const row = document.createElement("div");
+  row.className = "slider-row";
+  const range = document.createElement("input");
+  range.type = "range";
+  range.min = 0;
+  range.max = D.snapshots.length - 1;
+  range.value = state.snap;
+  const label = document.createElement("div");
+  label.className = "stamp";
+  label.textContent = stamp(D.snapshots[state.snap]);
+  row.appendChild(label);
+  row.appendChild(range);
+  chooser.appendChild(row);
+
+  const body = document.createElement("div");
+  host.appendChild(body);
+  range.addEventListener("input", () => {
+    state.snap = +range.value;
+    label.textContent = stamp(D.snapshots[state.snap]);
+    updateTiles();
+    body.innerHTML = "";
+    redraw(body);
+  });
+  redraw(body);
+}
+
+function viewArchive(host) {
+  const tl = archiveTimeline();
+  const live = tl.map((c, i) => (c ? i : -1)).filter(i => i >= 0);
+  if (!live.length) {
+    host.innerHTML = '<div class="card"><div class="empty">' +
+      "Nothing selected.</div></div>";
+    return;
+  }
+  const firstIdx = live[0], lastIdx = live[live.length - 1];
+  const first = tl[firstIdx], last = tl[lastIdx];
+  // Measure the span from the snapshot dates rather than counting rows: the
+  // step is only monthly by default, --every can make it anything.
+  const years = (snapDate(D.snapshots[lastIdx]) - snapDate(D.snapshots[firstIdx]))
+                / (365.2425 * 86400 * 1000);
+  const growth = last.total - first.total;
+
+  const sizeCard = card(host, "Total size of the archive",
+    "Every package published across all " + D.series.length + " series, with " +
+    "each file in pool/ counted once however many series reference it.");
+  lineChart(sizeCard, {
+    x: D.snapshots.map(shortStamp),
+    xTitle: i => stamp(D.snapshots[i]),
+    fmt: bytes,
+    series: [
+      { name: "whole archive", colour: "var(--s1)",
+        points: tl.map(c => (c ? c.total : null)) },
+      { name: "kernels", colour: "var(--s2)",
+        points: tl.map(c => (c ? c.kernel : null)) },
+    ],
+  });
+  legend(sizeCard, [["whole archive", "var(--s1)"], ["kernels", "var(--s2)"]]);
+  const sign = growth >= 0 ? "+" : "-";
+  // Only annualise once there is a year to annualise from; scaling up a
+  // three-month window produces a confident-looking number that means nothing.
+  const rate = years >= 1
+    ? ", " + sign + bytes(Math.abs(growth) / years) + " a year"
+    : "";
+  note(sizeCard,
+    bytes(first.total) + " at " + stamp(D.snapshots[firstIdx]) + " to " +
+    bytes(last.total) + " at " + stamp(D.snapshots[lastIdx]) + ": " +
+    sign + bytes(Math.abs(growth)) + " over " +
+    (years >= 1 ? years.toFixed(1) + " years" : Math.round(years * 12) + " months") +
+    rate + ", and kernels went from " +
+    pct(first.total ? first.kernel / first.total : 0) + " of it to " +
+    pct(last.total ? last.kernel / last.total : 0) + ".");
+
+  const shareCard = card(host, "Kernel share of the whole archive",
+    "The same two lines as a ratio.");
+  lineChart(shareCard, {
+    x: D.snapshots.map(shortStamp),
+    xTitle: i => stamp(D.snapshots[i]),
+    fmt: v => v.toFixed(0) + "%",
+    minMax: 10,
+    height: 240,
+    series: [{ name: "kernel share", colour: "var(--s1)",
+               points: tl.map(c => (c && c.total ? 100 * c.kernel / c.total : null)) }],
+  });
+
+  snapshotChooser(host, body => {
+    const byArch = new Map();
+    scanArchive((snap, arch, cls, n, v) => {
+      if (snap !== state.snap) return;
+      let a = byArch.get(arch);
+      if (!a) byArch.set(arch, a = { kernel: 0, total: 0, n: 0 });
+      a.total += v;
+      if (cls !== OTHER) { a.kernel += v; a.n += n; }
+    });
+    const c = card(body, "The archive by architecture",
+      "At " + stamp(D.snapshots[state.snap]) + ". Solid bar: kernel packages.");
+    barChart(c, {
+      labelWidth: 92,
+      items: [...byArch.entries()].sort((a, b) => b[1].total - a[1].total)
+        .map(entry => ({
+          label: D.arches[entry[0]], value: entry[1].kernel,
+          total: entry[1].total, n: entry[1].n,
+        })),
+      rowLabel: d => pct(d.total ? d.value / d.total : 0) + " of " + bytes(d.total),
+      tip: d => '<div class="tt-title">' + d.label + "</div>" +
+        '<div class="tt-row"><span>kernel</span><span>' + bytes(d.value) + "</span></div>" +
+        '<div class="tt-row"><span>everything</span><span>' + bytes(d.total) + "</span></div>" +
+        '<div class="tt-row"><span>share</span><span>' +
+        pct(d.total ? d.value / d.total : 0) + "</span></div>",
+    });
+    legend(c, [["kernel packages", "var(--s1)"],
+               ["everything published", "var(--neutral-fill)"]]);
+
+    const t = card(body, "The numbers", "");
+    const wrap = document.createElement("div");
+    wrap.className = "tablewrap";
+    let html = "<table><thead><tr><th>Snapshot</th><th>Archive</th>" +
+               "<th>Kernels</th><th>Share</th><th>Packages</th></tr></thead><tbody>";
+    tl.forEach((cell, i) => {
+      if (!cell) return;
+      html += "<tr><td>" + stamp(D.snapshots[i]) + '</td><td class="num">' +
+        bytes(cell.total) + '</td><td class="num">' + bytes(cell.kernel) +
+        '</td><td class="num">' + pct(cell.total ? cell.kernel / cell.total : 0) +
+        '</td><td class="num">' + count(cell.n) + "</td></tr>";
+    });
+    html += "</tbody></table>";
+    wrap.innerHTML = html;
+    t.appendChild(wrap);
+  });
+}
+
 /* ------------------------------------------------------------ card helpers */
 
 function card(host, title, sub) {
@@ -860,17 +1000,23 @@ function note(host, text) {
 /* ------------------------------------------------------------------ render */
 
 function updateTiles() {
-  const cur = snapshotTotals(state.snap);
+  const archive = state.view === "archive";
+  const cur = archive ? (archiveTimeline()[state.snap] ||
+                         { kernel: 0, total: 0, kn: 0, n: 0 })
+                      : snapshotTotals(state.snap);
+  const scope = archive ? "whole archive" : "selected";
   document.getElementById("tile-kernel").textContent = bytes(cur.kernel);
   document.getElementById("tile-kernel-note").textContent =
     count(cur.kn) + " packages at " + stamp(D.snapshots[state.snap]);
+  document.getElementById("tile-other-label").textContent =
+    archive ? "REST OF THE ARCHIVE" : "EVERYTHING ELSE";
   document.getElementById("tile-other").textContent = bytes(cur.total - cur.kernel);
   document.getElementById("tile-other-note").textContent =
     count(cur.n - cur.kn) + " packages";
   document.getElementById("tile-share").textContent =
     cur.total ? pct(cur.kernel / cur.total) : "-";
   document.getElementById("tile-share-note").textContent =
-    "of " + bytes(cur.total) + " selected";
+    "of " + bytes(cur.total) + " " + scope;
 }
 
 function render() {
@@ -888,13 +1034,16 @@ function render() {
       "Select at least one of each filter.</div></div>";
     return;
   }
-  if (state.view === "breakdown") viewBreakdown(host);
+  if (state.view === "archive") viewArchive(host);
+  else if (state.view === "breakdown") viewBreakdown(host);
   else if (state.view === "time") viewTime(host, timeline());
   else viewTable(host, timeline());
 }
 
-document.querySelectorAll(".tab").forEach(t =>
-  t.addEventListener("click", () => { state.view = t.dataset.view; render(); }));
+document.querySelectorAll(".tab").forEach(t => {
+  if (t.dataset.view === "archive" && !HAS_ARCHIVE) { t.hidden = true; return; }
+  t.addEventListener("click", () => { state.view = t.dataset.view; render(); });
+});
 
 document.getElementById("themebtn").addEventListener("click", () => {
   const root = document.documentElement;
@@ -913,7 +1062,11 @@ document.getElementById("footer").innerHTML =
   "<code>linux-objects-*-&lt;kver&gt;</code> built for a kernel version seen in " +
   "those images - the same rule as the <code>kernel-sizes</code> script.<br>" +
   "A file published to several pockets is counted once, so the totals are what " +
-  "the archive actually stores rather than the sum of the indexes.";
+  "the archive actually stores rather than the sum of the indexes.<br>" +
+  "Series share one pool/, so the per-series views cannot add up to the " +
+  "archive: summing them counts a file once per series that references it. " +
+  "The <b>Whole archive</b> tab is deduplicated across series and is the one " +
+  "to read for a total.";
 
 let resizeTimer = null;
 window.addEventListener("resize", () => {

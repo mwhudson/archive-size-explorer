@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from kernel_sizes import (  # noqa: E402
     Builder, Cache, Fetcher, CANDIDATE_SERIES, DEFAULT_COMPONENTS, OTHER,
-    POCKETS, default_cache_dir, log, snapshots,
+    POCKETS, aggregate, default_cache_dir, log, merge_rows, snapshots,
 )
 
 
@@ -97,36 +97,52 @@ class SkipOffline(Exception):
     pass
 
 
-def collect(builder, snaps, series_list, progress=True):
-    """Aggregate every (snapshot, series) pair we can, into flat tables."""
+def collect(builder, snaps, series_list, progress=True, archive=True):
+    """Aggregate every (snapshot, series) pair we can, into flat tables.
+
+    With archive=True the same rows are also folded into an archive-wide map
+    per snapshot and aggregated once more.  That pass is what gives a total
+    that counts each file in pool/ once instead of once per series that
+    references it.
+    """
     byclass = {}
     byflavour = {}
+    byarchive = {}
     seen_series = set()
     started = time.time()
     for i, snap in enumerate(snaps, 1):
+        whole = {} if archive else None
         for series in series_list:
             try:
-                result = builder.build_series(snap, series)
+                rows = builder.load_rows(snap, series)
             except SkipOffline:
                 continue
-            if result is None:
+            if rows is None:
                 continue
             seen_series.add(series)
-            cls_table, flav_table = result
+            cls_table, flav_table = aggregate(rows)
             for (arch, comp, mask, cls), acc in cls_table.items():
                 byclass[(snap, series, arch, comp, mask, cls)] = acc
             for (arch, mask, flav), acc in flav_table.items():
                 byflavour[(snap, series, arch, mask, flav)] = acc
+            if whole is not None:
+                merge_rows(whole, rows)
+            del rows
+        if whole:
+            cls_table, _flav = aggregate(whole)
+            for (arch, comp, mask, cls), acc in cls_table.items():
+                byarchive[(snap, arch, comp, mask, cls)] = acc
+            del whole
         if progress:
             elapsed = time.time() - started
             log("[%d/%d] %s  %d blobs fetched (%.1f MiB), %d cached, %.0fs"
                 % (i, len(snaps), snap, builder.downloads,
                    builder.fetcher.bytes_downloaded / 2 ** 20,
                    builder.hits, elapsed))
-    return byclass, byflavour, sorted(seen_series)
+    return byclass, byflavour, byarchive, sorted(seen_series)
 
 
-def encode(byclass, byflavour, snaps, series_list):
+def encode(byclass, byflavour, byarchive, snaps, series_list):
     """Pack the tables into dimension dictionaries plus flat integer rows."""
     def index(values):
         ordered = sorted(values)
@@ -136,9 +152,10 @@ def encode(byclass, byflavour, snaps, series_list):
     snap_i = {v: i for i, v in enumerate(used_snaps)}
     series = series_order({k[1] for k in byclass})
     series_i = {v: i for i, v in enumerate(series)}
-    arches, arch_i = index({k[2] for k in byclass} | {k[2] for k in byflavour})
-    comps, comp_i = index({k[3] for k in byclass})
-    classes, class_i = index({k[5] for k in byclass})
+    arches, arch_i = index({k[2] for k in byclass} | {k[2] for k in byflavour}
+                           | {k[1] for k in byarchive})
+    comps, comp_i = index({k[3] for k in byclass} | {k[2] for k in byarchive})
+    classes, class_i = index({k[5] for k in byclass} | {k[4] for k in byarchive})
     flavours, flav_i = index({k[4] for k in byflavour})
 
     cls_rows = []
@@ -149,6 +166,10 @@ def encode(byclass, byflavour, snaps, series_list):
     for (snap, ser, arch, mask, flav), acc in sorted(byflavour.items()):
         flav_rows += [snap_i[snap], series_i[ser], arch_i[arch], mask,
                       flav_i[flav], acc[0], acc[1], acc[2]]
+    arch_rows = []
+    for (snap, arch, comp, mask, cls), acc in sorted(byarchive.items()):
+        arch_rows += [snap_i[snap], arch_i[arch], comp_i[comp], mask,
+                      class_i[cls], acc[0], acc[1], acc[2]]
 
     return {
         "generated": datetime.datetime.now(
@@ -165,6 +186,7 @@ def encode(byclass, byflavour, snaps, series_list):
         },
         "byClass": {"stride": 9, "rows": cls_rows},
         "byFlavour": {"stride": 8, "rows": flav_rows},
+        "byArchive": {"stride": 8, "rows": arch_rows},
     }
 
 
@@ -190,15 +212,16 @@ def cmd_build(args):
     log("%d snapshot(s) x %d candidate series; cache at %s"
         % (len(snaps), len(series_list), args.cache))
 
-    byclass, byflavour, seen = collect(builder, snaps, series_list)
+    byclass, byflavour, byarchive, seen = collect(builder, snaps, series_list)
     if not byclass:
         log("nothing collected -- wrong window, or an --offline run with a "
             "cold cache")
         return 1
-    data = encode(byclass, byflavour, snaps, series_list)
-    log("collected %d class rows, %d flavour rows across %s"
+    data = encode(byclass, byflavour, byarchive, snaps, series_list)
+    log("collected %d class rows, %d flavour rows, %d archive rows across %s"
         % (len(data["byClass"]["rows"]) // 9,
-           len(data["byFlavour"]["rows"]) // 8, ", ".join(seen)))
+           len(data["byFlavour"]["rows"]) // 8,
+           len(data["byArchive"]["rows"]) // 8, ", ".join(seen)))
 
     payload = json.dumps(data, separators=(",", ":"))
     if args.json:
@@ -222,7 +245,8 @@ def cmd_report(args):
     snaps = snapshots(args.snapshot, args.snapshot, "month") \
         if args.snapshot else snapshots(None, None, "month")[-1:]
     series_list = args.series or CANDIDATE_SERIES
-    byclass, _flav, seen = collect(builder, snaps, series_list, progress=False)
+    byclass, _flav, byarchive, seen = collect(
+        builder, snaps, series_list, progress=False, archive=args.archive)
 
     per = {}
     for (snap, ser, arch, _comp, _mask, cls), acc in byclass.items():
@@ -242,8 +266,24 @@ def cmd_report(args):
                  100.0 * kern / total if total else 0, nkern, ntotal))
     if grand[0]:
         print("%-38s  %10s / %10s  %5.1f%%"
-              % ("TOTAL", human(grand[1]), human(grand[0]),
+              % ("sum of series", human(grand[1]), human(grand[0]),
                  100.0 * grand[1] / grand[0]))
+    if byarchive:
+        kern = total = 0
+        for (_snap, _arch, _comp, _mask, cls), acc in byarchive.items():
+            total += acc[1]
+            if cls != OTHER:
+                kern += acc[1]
+        if total:
+            print("%-38s  %10s / %10s  %5.1f%%"
+                  % ("whole archive (pool deduped)", human(kern), human(total),
+                     100.0 * kern / total))
+            if grand[0] > total:
+                print("%-38s  %10s  (%.1f%% of the archive, counted once per "
+                      "series that references it)"
+                      % ("...files shared between series",
+                         human(grand[0] - total),
+                         100.0 * (grand[0] - total) / total))
     return 0
 
 
@@ -277,7 +317,10 @@ def main():
     add_common(p)
     p.add_argument("--snapshot", metavar="YYYY-MM",
                    help="which snapshot (default: the most recent month)")
-    p.set_defaults(func=cmd_report)
+    p.add_argument("--no-archive", dest="archive", action="store_false",
+                   help="skip the archive-wide total, which needs every "
+                        "selected series in memory at once")
+    p.set_defaults(func=cmd_report, archive=True)
 
     p = sub.add_parser("cache", help="show what the cache is holding")
     p.add_argument("--cache", default=default_cache_dir(), metavar="DIR")
