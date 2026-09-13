@@ -367,14 +367,21 @@ function barPath(x, y, w, h, r) {
          "h" + (r - w) + "z";
 }
 
-/** Nice round tick values covering 0..max. */
+/** Nice round tick values from 0 up to at least max.
+
+    The top tick has to sit at or above max, not below it: the chart scales the
+    plot to the last tick, so a top tick under the data draws the line off the
+    top of the axes.  Ticks are built by multiplying rather than accumulating,
+    so 0.1-sized steps do not drift.
+ */
 function ticks(max, want) {
-  if (max <= 0) return [0];
+  if (!(max > 0)) return [0, 1];
   const raw = max / want;
   const mag = Math.pow(10, Math.floor(Math.log10(raw)));
   const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw) || mag * 10;
+  const n = Math.ceil(max / step - 1e-9);
   const out = [];
-  for (let v = 0; v <= max + step * 0.001; v += step) out.push(v);
+  for (let i = 0; i <= n; i++) out.push(i * step);
   return out;
 }
 
