@@ -307,6 +307,18 @@ function scanFlavour(fn) {
   }
 }
 
+/** kernel/total bytes at one snapshot. */
+function snapshotTotals(snap) {
+  const cur = { kernel: 0, total: 0, n: 0, kn: 0 };
+  scanClass((s, ser, arch, cls, n, v) => {
+    if (s !== snap) return;
+    cur.total += v;
+    cur.n += n;
+    if (cls !== OTHER) { cur.kernel += v; cur.kn += n; }
+  });
+  return cur;
+}
+
 /** kernel/total bytes per (snapshot, series). */
 function timeline() {
   const out = new Map();      // series -> array indexed by snapshot
@@ -635,15 +647,26 @@ function viewBreakdown(host) {
   const label = document.createElement("div");
   label.className = "stamp";
   label.textContent = stamp(D.snapshots[snap]);
-  range.addEventListener("input", () => {
-    state.snap = +range.value;
-    label.textContent = stamp(D.snapshots[state.snap]);
-    render();
-  });
   row.appendChild(label);
   row.appendChild(range);
   chooser.appendChild(row);
 
+  // Redrawing only the charts keeps the range input itself alive, so a drag
+  // survives past its first step.
+  const charts = document.createElement("div");
+  host.appendChild(charts);
+  range.addEventListener("input", () => {
+    state.snap = +range.value;
+    label.textContent = stamp(D.snapshots[state.snap]);
+    updateTiles();
+    charts.innerHTML = "";
+    drawBreakdown(charts);
+  });
+  drawBreakdown(charts);
+}
+
+function drawBreakdown(host) {
+  const snap = state.snap;
   const byClass = new Map(), byArch = new Map(), byFlav = new Map();
   scanClass((s, ser, arch, cls, n, v) => {
     if (s !== snap) return;
@@ -823,11 +846,8 @@ function note(host, text) {
 
 /* ------------------------------------------------------------------ render */
 
-function render() {
-  assignSlots();
-  buildFilters();
-  const tl = timeline();
-  const cur = tl.totals[state.snap] || { kernel: 0, total: 0, kn: 0, n: 0 };
+function updateTiles() {
+  const cur = snapshotTotals(state.snap);
   document.getElementById("tile-kernel").textContent = bytes(cur.kernel);
   document.getElementById("tile-kernel-note").textContent =
     count(cur.kn) + " packages at " + stamp(D.snapshots[state.snap]);
@@ -838,6 +858,12 @@ function render() {
     cur.total ? pct(cur.kernel / cur.total) : "-";
   document.getElementById("tile-share-note").textContent =
     "of " + bytes(cur.total) + " selected";
+}
+
+function render() {
+  assignSlots();
+  buildFilters();
+  updateTiles();
 
   document.querySelectorAll(".tab").forEach(t =>
     t.setAttribute("aria-selected", t.dataset.view === state.view ? "true" : "false"));
@@ -849,9 +875,9 @@ function render() {
       "Select at least one of each filter.</div></div>";
     return;
   }
-  if (state.view === "time") viewTime(host, tl);
-  else if (state.view === "breakdown") viewBreakdown(host);
-  else viewTable(host, tl);
+  if (state.view === "breakdown") viewBreakdown(host);
+  else if (state.view === "time") viewTime(host, timeline());
+  else viewTable(host, timeline());
 }
 
 document.querySelectorAll(".tab").forEach(t =>
