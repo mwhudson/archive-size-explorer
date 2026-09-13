@@ -183,25 +183,43 @@ def decompress(data, path):
     return data
 
 
+# Checksum sections a Release might carry, best first.  SHA256 is preferred
+# where it exists purely so that caches built before SHA512 turned up stay
+# valid; the devel series has been SHA512-only since around 2026-08, and older
+# suites are frozen with SHA256, so in practice each suite offers exactly one.
+RELEASE_DIGESTS = ["sha256", "sha512"]
+
+
 def parse_release(text):
-    """Pull the SHA256 section and Architectures/Components out of a Release."""
-    entries = {}
+    """Pull the checksum section and Architectures/Components out of a Release.
+
+    Returns (entries, arches, components, algorithm), where algorithm names the
+    hashlib digest the entries are keyed by.
+    """
+    sections = {}
     arches = []
     components = []
-    in_sha = False
+    current = None
     for line in text.split(b"\n"):
         if line.startswith(b" "):
-            if in_sha:
+            if current is not None:
                 fields = line.split()
                 if len(fields) == 3:
-                    entries[fields[2].decode()] = fields[0].decode()
+                    sections[current][fields[2].decode()] = fields[0].decode()
             continue
-        in_sha = line.startswith(b"SHA256:")
-        if line.startswith(b"Architectures:"):
+        current = None
+        head = line.split(b":", 1)[0].lower().decode(errors="replace")
+        if head in RELEASE_DIGESTS:
+            current = head
+            sections.setdefault(current, {})
+        elif line.startswith(b"Architectures:"):
             arches = line.split(b":", 1)[1].decode().split()
         elif line.startswith(b"Components:"):
             components = line.split(b":", 1)[1].decode().split()
-    return entries, arches, components
+    for algo in RELEASE_DIGESTS:
+        if sections.get(algo):
+            return sections[algo], arches, components, algo
+    return {}, arches, components, RELEASE_DIGESTS[0]
 
 
 def slim_packages(raw):
@@ -507,30 +525,45 @@ class Builder:
         self.downloads = 0
         self.hits = 0
 
+    @staticmethod
+    def _stale(entries):
+        """True for a suite we cached before we could read its checksums.
+
+        An empty dict is a real answer -- it means the suite 404s at that
+        snapshot.  A dict holding only the "_" metadata keys means we parsed a
+        Release and understood none of it, which is a bug to re-do, not a fact.
+        """
+        return bool(entries) and not any(k[0] != "_" for k in entries)
+
     def release(self, snapshot, suite):
         """Cached {path: sha256} for a suite, fetching the Release if needed."""
         cached = self.cache.get_release(snapshot, suite)
-        if cached is not None:
+        if cached is not None and not self._stale(cached):
             return cached
         url = "%s/%s/dists/%s/Release" % (SNAPSHOT_BASE, snapshot, suite)
         body = self.fetcher.get(url)
         if body is None:
             self.cache.put_release(snapshot, suite, {})
             return {}
-        entries, arches, components = parse_release(body)
+        entries, arches, components, algo = parse_release(body)
+        if not entries:
+            raise RuntimeError(
+                "no usable checksum section in %s (looked for %s)"
+                % (url, ", ".join(RELEASE_DIGESTS)))
         entries["_arches"] = " ".join(arches)
         entries["_components"] = " ".join(components)
+        entries["_algo"] = algo
         self.cache.put_release(snapshot, suite, entries)
         return entries
 
-    def _ensure_blob(self, snapshot, suite, path, sha):
+    def _ensure_blob(self, snapshot, suite, path, sha, algo):
         if self.cache.have_blob(sha):
             return
         url = "%s/%s/dists/%s/%s" % (SNAPSHOT_BASE, snapshot, suite, path)
         body = self.fetcher.get(url)
         if body is None:
             raise RuntimeError("Release lists %s but it is missing" % url)
-        got = hashlib.sha256(body).hexdigest()
+        got = hashlib.new(algo, body).hexdigest()
         if got != sha:
             raise RuntimeError("checksum mismatch for %s" % url)
         raw = decompress(body, path)
@@ -554,6 +587,7 @@ class Builder:
             if not entries:
                 continue
             found = True
+            algo = entries.get("_algo", "sha256")
             arches = self.arches or entries.get("_arches", "").split()
             components = [c for c in self.components
                           if c in entries.get("_components", "").split()]
@@ -561,7 +595,7 @@ class Builder:
                 for suffix in (".xz", ".gz", ""):
                     sha = entries.get(path + suffix)
                     if sha:
-                        wanted.append((component, pocket, path + suffix, sha))
+                        wanted.append((component, pocket, path + suffix, sha, algo))
                         break
         return wanted if found else None
 
@@ -574,19 +608,19 @@ class Builder:
         self.hits += len(wanted) - len(missing)
         if missing:
             suite_of = {}
-            for component, pocket, path, sha in missing:
-                suite_of[sha] = (suite_name(series, pocket), path)
+            for component, pocket, path, sha, algo in missing:
+                suite_of[sha] = (suite_name(series, pocket), path, algo)
             with ThreadPoolExecutor(max_workers=self.fetcher.jobs) as pool:
                 list(pool.map(
                     lambda item: self._ensure_blob(
-                        snapshot, item[1][0], item[1][1], item[0]),
+                        snapshot, item[1][0], item[1][1], item[0], item[1][2]),
                     suite_of.items()))
 
         rows = {}
         bit = {p: 1 << i for i, p in enumerate(POCKETS)}
         for component in self.components:
             for pocket in self.pockets:
-                for c, p, path, sha in wanted:
+                for c, p, path, sha, _algo in wanted:
                     if c == component and p == pocket:
                         load_slim(self.cache, sha, component, bit[pocket], rows)
         return aggregate(rows)
