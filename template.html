@@ -245,16 +245,22 @@ const state = {
   snap: D.snapshots.length - 1,
 };
 
-// Default to whatever is alive at the most recent snapshot, capped at the
-// number of colours we have.
+// Default to the series that are still moving.  "Present at the most recent
+// snapshot" is no use as a test: the snapshot service keeps EOL suites served
+// forever, frozen at whatever they held on their last day, so kinetic is just
+// as present in 2026 as noble is.  A series that has not changed size since the
+// snapshot before is one of those fossils, and is left unticked.
 (function initialSelection() {
   const last = D.snapshots.length - 1;
-  const alive = new Set();
   const rows = DATA.byClass.rows;
+  const now = new Map(), before = new Map();
   for (let i = 0; i < rows.length; i += 9) {
-    if (rows[i] === last) alive.add(rows[i + 1]);
+    const bucket = rows[i] === last ? now : (rows[i] === last - 1 ? before : null);
+    if (bucket) bucket.set(rows[i + 1], (bucket.get(rows[i + 1]) || 0) + rows[i + 7]);
   }
-  const picked = [...alive].sort((a, b) => b - a).slice(0, SLOTS);
+  const active = [...now.keys()].filter(s => now.get(s) !== before.get(s));
+  const picked = (active.length ? active : [...now.keys()])
+    .sort((a, b) => b - a).slice(0, SLOTS);
   picked.forEach(s => state.series.add(s));
   if (!state.series.size) D.series.forEach((_, i) => state.series.add(i));
   D.arches.forEach((_, i) => state.arch.add(i));
