@@ -553,7 +553,9 @@ function chipRow(label, values, selected, onToggle, colourFor) {
   const all = document.createElement("button");
   all.className = "chip allnone";
   all.type = "button";
-  all.textContent = selected.size === values.length ? "none" : "all";
+  // "select all"/"select none" rather than "all"/"none": one of the values in
+  // the architecture row is itself called "all".
+  all.textContent = selected.size === values.length ? "select none" : "select all";
   all.addEventListener("click", () => {
     if (selected.size === values.length) selected.clear();
     else values.forEach((_, i) => selected.add(i));
