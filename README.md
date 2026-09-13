@@ -15,7 +15,9 @@ than by re-running the script.
 
 There are two things it will tell you: how much of the archive is kernels, and
 how big the archive is. The **Whole archive** tab tracks the total over time
-(and the kernel share of it); the other tabs slice it by series.
+(and the kernel share of it); the other tabs break it down. A "one line per"
+control switches the charts between a line per series and a line per
+architecture.
 
 ## Using it
 
@@ -95,16 +97,20 @@ Because of that, selecting pockets in the page is a **union**, not a sum: a file
 in both `-updates` and `-security` is included when you tick either, and counted
 once when you tick both.
 
-**Series share one `pool/`, so they do not add up.** There is a single pool for
-the whole archive, and a package version that two series both reference is one
-file on disk. As of 2026-09 that is 626k files — 1.2 TiB, 12.6% of the archive —
-mostly `Architecture: all` and source packages that have not changed in years.
-Adding up per-series totals counts each of those once per series.
+**Series share one `pool/`.** There is a single pool for the whole archive, and
+a package version that two series both reference is one file on disk. As of
+2026-09 that is 626k files — 1.2 TiB, 12.7% of the archive — mostly
+`Architecture: all` and source packages that have not changed in years.
 
-The **Whole archive** tab is deduplicated across series and is the number to
-quote for a total; the per-series views sum, because "the size of jammy" is a
-per-series question. The difference is not small: at 2026-09 the sum is 10.5 TiB
-against a real 9.3 TiB, and the kernel share moves from 38.1% to 43.0% — the
+Every total here counts such a file **once** for whatever set of series you have
+ticked, the same way pockets work. The one place that does not hold, and cannot,
+is a per-series line or row: a file jammy and noble both reference is part of
+jammy's size and part of noble's, so it is counted in both and those lines add
+up to more than the archive holds. The last column of the table view and the
+Whole archive tab give the deduplicated figure.
+
+The difference is not small: at 2026-09 the per-series numbers sum to 10.9 TiB
+against a real 9.6 TiB, and the kernel share moves from 38.0% to 42.6% — the
 shared files are almost all *not* kernels, so dropping the duplicates makes
 kernels a bigger fraction of what is left.
 
@@ -169,11 +175,16 @@ pocket-set is the bitmask of every pocket the file appears in. That is what lets
 the page compute an exact union for any combination of pockets you tick without
 going back to the raw data.
 
-The archive-wide table is the same thing with the series dimension collapsed and
-the deduplication done across every series in the run, which is why it is a
-separate table rather than something the page could add up for itself. Doing the
-same trick for series — a bitmask of which series reference a file — would be
-exact for any subset, but where five pockets give 32 possible masks, twelve
-series give 4096, and the row count goes up accordingly. So the page can dedupe
-across pockets for any selection you like, but across series only for all of
-them at once.
+The series dimension is a bitmask in exactly the same way, which is what lets
+any set of series be unioned rather than summed. Twelve series could in
+principle produce 4096 masks and an unusable row count, which is why this
+started out as a separate archive-wide table — but only **93** of them actually
+occur, because sharing follows patterns: most files belong to one series, and
+almost all the rest to a run of consecutive ones. Carrying the mask costs about
+25% more rows than storing a single series per row did, and in exchange every
+selection is exact and there is only one table.
+
+Since a snapshot has to be deduplicated across all of its series at once, it is
+also aggregated in one go, which means holding every series' rows for that
+snapshot in memory together — a few million entries. That is the peak cost of a
+build.

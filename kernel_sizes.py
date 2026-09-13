@@ -365,9 +365,11 @@ def extract_kver(pkg):
 
 class Row:
     __slots__ = ("ver", "arch", "size", "isize", "src", "prov", "mask",
-                 "component")
+                 "component", "smask")
 
-    def __init__(self, ver, arch, size, isize, src, prov, mask, component):
+    def __init__(self, ver, arch, size, isize, src, prov, mask, component,
+                 smask=0):
+        self.smask = smask
         self.ver = ver
         self.arch = arch
         self.size = size
@@ -415,7 +417,7 @@ def load_slim(cache, sha, component, dir_arch, pocket_bit, into):
 
 
 def aggregate(rows):
-    """Turn a (snapshot, series)'s worth of rows into the two output tables.
+    """Turn one snapshot's worth of rows into the two output tables.
 
     Kernel-ness follows kernel-sizes: every binary of a source that ships
     something providing linux-image, plus any linux-objects-*-<kver> built for
@@ -436,8 +438,8 @@ def aggregate(rows):
             r"^linux-objects-.+-(%s)$"
             % "|".join(re.escape(v) for v in sorted(kvers)))
 
-    by_class = defaultdict(lambda: [0, 0, 0])    # arch, comp, mask, class
-    by_flavour = defaultdict(lambda: [0, 0, 0])  # arch, mask, flavour
+    by_class = defaultdict(lambda: [0, 0, 0])    # smask, arch, comp, mask, class
+    by_flavour = defaultdict(lambda: [0, 0, 0])  # smask, arch, mask, flavour
 
     for (pkg, _ver, _arch), row in rows.items():
         name = pkg.decode()
@@ -449,12 +451,12 @@ def aggregate(rows):
             cls = "srcpkg"
         else:
             cls = classify(name)
-        acc = by_class[(row.arch, row.component, row.mask, cls)]
+        acc = by_class[(row.smask, row.arch, row.component, row.mask, cls)]
         acc[0] += 1
         acc[1] += row.size
         acc[2] += row.isize * 1024
         if is_kernel:
-            acc = by_flavour[(row.arch, row.mask, flavour(row.src))]
+            acc = by_flavour[(row.smask, row.arch, row.mask, flavour(row.src))]
             acc[0] += 1
             acc[1] += row.size
             acc[2] += row.isize * 1024
@@ -646,29 +648,28 @@ class Builder:
                                   bit[pocket], rows)
         return rows
 
-    def build_series(self, snapshot, series):
-        """Fetch what is missing and aggregate one (snapshot, series)."""
-        rows = self.load_rows(snapshot, series)
-        if rows is None:
-            return None
-        return aggregate(rows)
 
-
-def merge_rows(into, rows):
-    """Fold one series' rows into an archive-wide (pkg, ver, arch) map.
+def merge_rows(into, rows, series_bit):
+    """Fold one series' rows into a snapshot-wide (pkg, ver, arch) map.
 
     Ubuntu has a single pool/ shared by every series, so the same package
-    version referenced by two series is one file on disk.  Summing per-series
-    totals double-counts those -- as of 2026-09 by 12.6%, some 626k files,
-    mostly Architecture: all and source packages that have not changed in
-    years.  Folding them into one map here is what makes an archive-wide total
-    mean anything.
+    version referenced by two series is one file on disk.  Each row therefore
+    carries a bitmask of every series that references it -- as of 2026-09 only
+    93 distinct masks occur out of the 4096 twelve series could produce,
+    because sharing follows patterns: most files belong to one series, and the
+    rest are mostly runs of consecutive ones.
+
+    That mask is what lets the page take any set of series and count each file
+    once, exactly as the pocket mask does for pockets.  Summing per-series
+    totals instead would count a shared file once per series that mentions it,
+    which for 2026-09 is 1.2 TiB, 12.6% of the archive.
     """
     for key, row in rows.items():
         cur = into.get(key)
         if cur is None:
             into[key] = Row(row.ver, row.arch, row.size, row.isize, row.src,
-                            row.prov, row.mask, row.component)
+                            row.prov, row.mask, row.component, series_bit)
         else:
             cur.mask |= row.mask
             cur.prov = cur.prov or row.prov
+            cur.smask |= series_bit

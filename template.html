@@ -216,23 +216,49 @@ const SLOTS = 8;                       // categorical slots; never cycled
 // it until it is deselected, so filtering never repaints the survivors.  There
 // are only SLOTS colours and none are ever reused or generated, so a selection
 // wider than that leaves the extras uncoloured -- they stay in the table.
-const slotOf = new Map();
+// Colour follows the entity, not its rank: once a key holds a slot it keeps
+// it until deselected, so filtering never repaints the survivors.  There are
+// only SLOTS colours and none are ever reused or generated, so a selection
+// wider than that leaves the extras uncoloured -- they stay in the table.
+function Slots() { this.map = new Map(); }
 
-function assignSlots() {
-  for (const s of [...slotOf.keys()]) {
-    if (!state.series.has(s)) slotOf.delete(s);
+Slots.prototype.assign = function (selected) {
+  for (const k of [...this.map.keys()]) {
+    if (!selected.has(k)) this.map.delete(k);
   }
-  const used = new Set(slotOf.values());
-  for (const s of [...state.series].sort((a, b) => a - b)) {
-    if (slotOf.has(s)) continue;
+  const used = new Set(this.map.values());
+  for (const k of [...selected].sort((a, b) => a - b)) {
+    if (this.map.has(k)) continue;
     for (let i = 0; i < SLOTS; i++) {
-      if (!used.has(i)) { slotOf.set(s, i); used.add(i); break; }
+      if (!used.has(i)) { this.map.set(k, i); used.add(i); break; }
     }
   }
+};
+Slots.prototype.colour = function (k) {
+  return this.map.has(k) ? "var(--s" + (this.map.get(k) + 1) + ")" : null;
+};
+Slots.prototype.drawable = function (selected) {
+  return [...selected].sort((a, b) => a - b).filter(k => this.map.has(k));
+};
+
+const seriesSlots = new Slots();
+const archSlots = new Slots();
+const seriesColour = k => seriesSlots.colour(k);
+const archColour = k => archSlots.colour(k);
+
+function assignSlots() {
+  seriesSlots.assign(state.series);
+  archSlots.assign(state.arch);
 }
 
-const seriesColour = s =>
-  (slotOf.has(s) ? "var(--s" + (slotOf.get(s) + 1) + ")" : null);
+/** Whichever dimension the charts are currently drawing one line per. */
+function split() {
+  return state.splitBy === "arch"
+    ? { key: "arch", names: D.arches, sel: state.arch, slots: archSlots,
+        label: "architecture" }
+    : { key: "series", names: D.series, sel: state.series, slots: seriesSlots,
+        label: "series" };
+}
 
 /* ------------------------------------------------------------------ state */
 
@@ -242,6 +268,7 @@ const state = {
   pocket: new Set(DATA.pockets.map((_, i) => i)),
   comp: new Set(D.components.map((_, i) => i)),
   metric: "size",
+  splitBy: "series",
   view: "time",
   snap: D.snapshots.length - 1,
 };
@@ -254,15 +281,25 @@ const state = {
 (function initialSelection() {
   const last = D.snapshots.length - 1;
   const rows = DATA.byClass.rows;
-  const now = new Map(), before = new Map();
+  const now = new Array(D.series.length).fill(0);
+  const before = new Array(D.series.length).fill(0);
   for (let i = 0; i < rows.length; i += 9) {
     const bucket = rows[i] === last ? now : (rows[i] === last - 1 ? before : null);
-    if (bucket) bucket.set(rows[i + 1], (bucket.get(rows[i + 1]) || 0) + rows[i + 7]);
+    if (!bucket) continue;
+    const mask = rows[i + 1], size = rows[i + 7];
+    for (let ser = 0; ser < D.series.length; ser++) {
+      if (mask >> ser & 1) bucket[ser] += size;
+    }
   }
-  const active = [...now.keys()].filter(s => now.get(s) !== before.get(s));
-  const picked = (active.length ? active : [...now.keys()])
-    .sort((a, b) => b - a).slice(0, SLOTS);
-  picked.forEach(s => state.series.add(s));
+  const active = [];
+  for (let ser = 0; ser < D.series.length; ser++) {
+    if (now[ser] && now[ser] !== before[ser]) active.push(ser);
+  }
+  const candidates = active.length
+    ? active
+    : now.map((v, i) => (v ? i : -1)).filter(i => i >= 0);
+  candidates.sort((a, b) => b - a).slice(0, SLOTS)
+            .forEach(ser => state.series.add(ser));
   if (!state.series.size) D.series.forEach((_, i) => state.series.add(i));
   D.arches.forEach((_, i) => state.arch.add(i));
 })();
@@ -293,11 +330,22 @@ const metricIdx = () => (state.metric === "size" ? 7 : 8);
 // A row's mask is every pocket the file appears in; it is included when the
 // selection touches any of them, and counted once. That is exactly the union
 // of the selected pockets, which is what the archive holds on disk.
+function seriesMask() {
+  let m = 0;
+  for (const s of state.series) m |= 1 << s;
+  return m;
+}
+
+// Both masks work the same way: a row carries every pocket, and every series,
+// that references its file, and is included -- once -- when the selection
+// touches any of them.  That is the union of what you ticked, which is what
+// the archive holds on disk, rather than the sum of the indexes.
 function scanClass(fn) {
-  const rows = DATA.byClass.rows, pm = pocketMask(), vi = metricIdx();
+  const rows = DATA.byClass.rows, pm = pocketMask(), sm = seriesMask();
+  const vi = metricIdx();
   for (let i = 0; i < rows.length; i += 9) {
     if (!(rows[i + 4] & pm)) continue;
-    if (!state.series.has(rows[i + 1])) continue;
+    if (!(rows[i + 1] & sm)) continue;
     if (!state.arch.has(rows[i + 2])) continue;
     if (!state.comp.has(rows[i + 3])) continue;
     fn(rows[i], rows[i + 1], rows[i + 2], rows[i + 5], rows[i + 6], rows[i + vi]);
@@ -305,20 +353,20 @@ function scanClass(fn) {
 }
 
 function scanFlavour(fn) {
-  const rows = DATA.byFlavour.rows, pm = pocketMask();
+  const rows = DATA.byFlavour.rows, pm = pocketMask(), sm = seriesMask();
   const vi = metricIdx() - 1;   // stride 8: count at 5, size 6, isize 7
   for (let i = 0; i < rows.length; i += 8) {
     if (!(rows[i + 3] & pm)) continue;
-    if (!state.series.has(rows[i + 1])) continue;
+    if (!(rows[i + 1] & sm)) continue;
     if (!state.arch.has(rows[i + 2])) continue;
     fn(rows[i], rows[i + 1], rows[i + 2], rows[i + 4], rows[i + 5], rows[i + vi]);
   }
 }
 
-/** kernel/total bytes at one snapshot. */
+/** kernel/total bytes at one snapshot, deduplicated across the selection. */
 function snapshotTotals(snap) {
   const cur = { kernel: 0, total: 0, n: 0, kn: 0 };
-  scanClass((s, ser, arch, cls, n, v) => {
+  scanClass((s, smask, arch, cls, n, v) => {
     if (s !== snap) return;
     cur.total += v;
     cur.n += n;
@@ -327,27 +375,43 @@ function snapshotTotals(snap) {
   return cur;
 }
 
-/** kernel/total bytes per (snapshot, series). */
+/** Per-snapshot totals, plus a per-key breakdown along the split dimension.
+
+    The totals count each file once however many series or architectures share
+    it.  The per-key numbers deliberately do not: a file both jammy and noble
+    reference is part of jammy's size and part of noble's, so it is added to
+    each.  That is why the lines do not sum to the total, and why the archive
+    view reads the totals rather than adding the lines up.
+ */
 function timeline() {
-  const out = new Map();      // series -> array indexed by snapshot
+  const sp = split();
+  const perKey = new Map();
   const totals = D.snapshots.map(() => ({ kernel: 0, total: 0, n: 0, kn: 0 }));
-  scanClass((snap, ser, arch, cls, n, v) => {
-    let per = out.get(ser);
-    if (!per) { per = D.snapshots.map(() => null); out.set(ser, per); }
+
+  function add(key, snap, cls, n, v) {
+    let per = perKey.get(key);
+    if (!per) { per = D.snapshots.map(() => null); perKey.set(key, per); }
     let cell = per[snap];
     if (!cell) cell = per[snap] = { kernel: 0, total: 0, n: 0, kn: 0 };
     cell.total += v;
     cell.n += n;
-    totals[snap].total += v;
-    totals[snap].n += n;
-    if (cls !== OTHER) {
-      cell.kernel += v;
-      cell.kn += n;
-      totals[snap].kernel += v;
-      totals[snap].kn += n;
+    if (cls !== OTHER) { cell.kernel += v; cell.kn += n; }
+  }
+
+  scanClass((snap, smask, arch, cls, n, v) => {
+    const t = totals[snap];
+    t.total += v;
+    t.n += n;
+    if (cls !== OTHER) { t.kernel += v; t.kn += n; }
+    if (sp.key === "arch") {
+      add(arch, snap, cls, n, v);
+    } else {
+      for (const ser of state.series) {
+        if (smask >> ser & 1) add(ser, snap, cls, n, v);
+      }
     }
   });
-  return { perSeries: out, totals };
+  return { perKey, totals, split: sp };
 }
 
 /* ---------------------------------------------------------------- svg bits */
@@ -575,7 +639,8 @@ function buildFilters() {
   host.innerHTML = "";
   host.appendChild(chipRow("Series", D.series, state.series, toggler(state.series),
                            i => seriesColour(i)));
-  host.appendChild(chipRow("Arch", D.arches, state.arch, toggler(state.arch)));
+  host.appendChild(chipRow("Arch", D.arches, state.arch, toggler(state.arch),
+                           i => archColour(i)));
   host.appendChild(chipRow("Pocket", DATA.pockets, state.pocket, toggler(state.pocket)));
   host.appendChild(chipRow("Component", D.components, state.comp, toggler(state.comp)));
 
@@ -598,57 +663,88 @@ function buildFilters() {
   });
   row.appendChild(chips);
   host.appendChild(row);
+
+  const lines = document.createElement("div");
+  lines.className = "frow";
+  const llab = document.createElement("div");
+  llab.className = "flabel";
+  llab.textContent = "One line per";
+  lines.appendChild(llab);
+  const lchips = document.createElement("div");
+  lchips.className = "chips";
+  [["series", "Series"], ["arch", "Architecture"]].forEach(pair => {
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.type = "button";
+    b.textContent = pair[1];
+    b.setAttribute("aria-pressed", state.splitBy === pair[0] ? "true" : "false");
+    b.addEventListener("click", () => { state.splitBy = pair[0]; render(); });
+    lchips.appendChild(b);
+  });
+  lines.appendChild(lchips);
+  host.appendChild(lines);
 }
 
 /* ------------------------------------------------------------------- views */
 
-/** Selected series that hold a colour slot, so can be drawn unambiguously. */
-function drawableSeries() {
-  return [...state.series].sort((a, b) => a - b).filter(s => slotOf.has(s));
+/** Build the line series for the current split, plus a note about any that
+    could not be given a colour. */
+function splitLines(tl, pick) {
+  const sp = tl.split;
+  const drawn = sp.slots.drawable(sp.sel);
+  return {
+    dropped: sp.sel.size - drawn.length,
+    label: sp.label,
+    keys: drawn,
+    series: drawn.map(k => ({
+      name: sp.names[k],
+      colour: sp.slots.colour(k),
+      points: (tl.perKey.get(k) || []).map(c => (c ? pick(c) : null)),
+    })),
+  };
+}
+
+function dropNote(host, lines) {
+  if (!lines.dropped) return;
+  note(host, lines.dropped + (lines.dropped === 1 ? " more selected " : " more selected ") +
+       lines.label + (lines.dropped === 1 ? " is" : " are") + " not drawn: all " +
+       SLOTS + " colour slots are taken, and reusing one would be ambiguous. " +
+       "Untick one to free a colour, or use the table view.");
 }
 
 function viewTime(host, tl) {
-  const drawn = drawableSeries();
-  const dropped = state.series.size - drawn.length;
   const xs = D.snapshots.map(shortStamp);
+  const shareLines = splitLines(tl, c => (c.total ? 100 * c.kernel / c.total : null));
 
-  const shareCard = card(host, "Kernel share of the archive",
-    "Kernel bytes as a percentage of every selected package, at each snapshot.");
+  const shareCard = card(host, "Kernel share, per " + tl.split.label,
+    "Kernel bytes as a percentage of everything selected, one line per " +
+    tl.split.label + ", at each snapshot.");
   lineChart(shareCard, {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
     fmt: v => v.toFixed(0) + "%",
     minMax: 10,
-    series: drawn.map(s => ({
-      name: D.series[s],
-      colour: seriesColour(s),
-      points: (tl.perSeries.get(s) || []).map(
-        c => (c && c.total ? 100 * c.kernel / c.total : null)),
-    })),
+    series: shareLines.series,
   });
-  legend(shareCard, drawn.map(s => [D.series[s], seriesColour(s)]));
-  if (dropped) {
-    note(shareCard, dropped + (dropped === 1 ? " more selected series is"
-                               : " more selected series are") + " not drawn: all " +
-         SLOTS + " colour slots are taken, and reusing one would be " +
-         "ambiguous. Deselect a series to free a colour, or use the table " +
-         "view, which has every series.");
-  }
+  legend(shareCard, shareLines.series.map(l => [l.name, l.colour]));
+  dropNote(shareCard, shareLines);
 
-  const absCard = card(host, "Kernel bytes",
+  const absLines = splitLines(tl, c => c.kernel);
+  const absCard = card(host, "Kernel bytes, per " + tl.split.label,
     "The same selection in absolute terms, so a rising share can be told apart " +
     "from a shrinking archive.");
   lineChart(absCard, {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
     fmt: bytes,
-    series: drawn.map(s => ({
-      name: D.series[s],
-      colour: seriesColour(s),
-      points: (tl.perSeries.get(s) || []).map(c => (c ? c.kernel : null)),
-    })),
+    series: absLines.series,
   });
-  legend(absCard, drawn.map(s => [D.series[s], seriesColour(s)]));
+  legend(absCard, absLines.series.map(l => [l.name, l.colour]));
+  if (tl.split.key === "series") {
+    note(absCard, "A file that several series share counts towards each of " +
+         "them, so these lines add up to more than the archive holds. The " +
+         "Whole archive tab counts each file once.");
+  }
 }
 
 function viewBreakdown(host) {
@@ -658,7 +754,7 @@ function viewBreakdown(host) {
 function drawBreakdown(host) {
   const snap = state.snap;
   const byClass = new Map(), byArch = new Map(), byFlav = new Map();
-  scanClass((s, ser, arch, cls, n, v) => {
+  scanClass((s, smask, arch, cls, n, v) => {
     if (s !== snap) return;
     let a = byArch.get(arch);
     if (!a) byArch.set(arch, a = { kernel: 0, total: 0, n: 0 });
@@ -671,7 +767,7 @@ function drawBreakdown(host) {
       byClass.set(cls, c);
     }
   });
-  scanFlavour((s, ser, arch, flav, n, v) => {
+  scanFlavour((s, smask, arch, flav, n, v) => {
     if (s !== snap) return;
     const f = byFlav.get(flav) || { v: 0, n: 0 };
     f.v += v; f.n += n;
@@ -729,19 +825,21 @@ function drawBreakdown(host) {
 }
 
 function viewTable(host, tl) {
+  const sp = tl.split;
   const c = card(host, "Kernel share over time",
-    "Every selected series, including any the charts could not colour.");
+    "Every selected " + sp.label + ", including any the charts could not " +
+    "colour. The last column counts each file once across the whole selection.");
   const wrap = document.createElement("div");
   wrap.className = "tablewrap";
-  const sel = [...state.series].sort((a, b) => a - b);
+  const sel = [...sp.sel].sort((a, b) => a - b);
   let html = "<table><thead><tr><th>Snapshot</th>";
-  for (const s of sel) html += "<th>" + D.series[s] + "</th>";
+  for (const s of sel) html += "<th>" + sp.names[s] + "</th>";
   html += "<th>all selected</th></tr></thead><tbody>";
   D.snapshots.forEach((snapshot, i) => {
     if (!tl.totals[i].total) return;
     html += "<tr><td>" + stamp(snapshot) + "</td>";
     for (const s of sel) {
-      const cell = (tl.perSeries.get(s) || [])[i];
+      const cell = (tl.perKey.get(s) || [])[i];
       html += '<td class="num">' +
         (cell && cell.total ? pct(cell.kernel / cell.total) : "-") + "</td>";
     }
@@ -755,13 +853,16 @@ function viewTable(host, tl) {
   const c2 = card(host, "One snapshot in full",
     "The bytes behind the breakdown charts, at " + stamp(D.snapshots[state.snap]) + ".");
   const rows = new Map();
-  scanClass((s, ser, arch, cls, n, v) => {
+  scanClass((s, smask, arch, cls, n, v) => {
     if (s !== state.snap) return;
-    const key = D.series[ser] + " " + D.arches[arch];
-    const r = rows.get(key) || { kernel: 0, total: 0, kn: 0, n: 0 };
-    r.total += v; r.n += n;
-    if (cls !== OTHER) { r.kernel += v; r.kn += n; }
-    rows.set(key, r);
+    for (const ser of state.series) {
+      if (!(smask >> ser & 1)) continue;
+      const key = D.series[ser] + " " + D.arches[arch];
+      const r = rows.get(key) || { kernel: 0, total: 0, kn: 0, n: 0 };
+      r.total += v; r.n += n;
+      if (cls !== OTHER) { r.kernel += v; r.kn += n; }
+      rows.set(key, r);
+    }
   });
   let h2 = "<table><thead><tr><th>Series</th><th>Arch</th><th>Kernel</th>" +
            "<th>Total</th><th>Share</th><th>Kernel pkgs</th><th>All pkgs</th>" +
@@ -777,11 +878,12 @@ function viewTable(host, tl) {
       '</td><td class="num">' + count(r.kn) + '</td><td class="num">' +
       count(r.n) + "</td></tr>";
   });
-  h2 += '<tr class="total"><td>total</td><td></td><td class="num">' +
-    bytes(totals.kernel) + '</td><td class="num">' + bytes(totals.total) +
-    '</td><td class="num">' + pct(totals.total ? totals.kernel / totals.total : 0) +
-    '</td><td class="num">' + count(totals.kn) + '</td><td class="num">' +
-    count(totals.n) + "</td></tr></tbody></table>";
+  const dedup = snapshotTotals(state.snap);
+  h2 += '<tr class="total"><td>deduped</td><td></td><td class="num">' +
+    bytes(dedup.kernel) + '</td><td class="num">' + bytes(dedup.total) +
+    '</td><td class="num">' + pct(dedup.total ? dedup.kernel / dedup.total : 0) +
+    '</td><td class="num">' + count(dedup.kn) + '</td><td class="num">' +
+    count(dedup.n) + "</td></tr></tbody></table>";
   const wrap2 = document.createElement("div");
   wrap2.className = "tablewrap";
   wrap2.innerHTML = h2;
@@ -790,35 +892,6 @@ function viewTable(host, tl) {
 
 
 /* --------------------------------------------------------- whole archive */
-
-// Ubuntu has one pool/ for every series, so a package version two series both
-// reference is one file on disk.  These rows were deduped across series at
-// build time; the per-series views cannot be, so they sum instead, and the two
-// totals differ by however much the series share.
-const ARCHIVE = DATA.byArchive || { stride: 8, rows: [] };
-const HAS_ARCHIVE = ARCHIVE.rows.length > 0;
-
-function scanArchive(fn) {
-  const rows = ARCHIVE.rows, pm = pocketMask(), vi = metricIdx() - 1;
-  for (let i = 0; i < rows.length; i += 8) {
-    if (!(rows[i + 3] & pm)) continue;
-    if (!state.arch.has(rows[i + 1])) continue;
-    if (!state.comp.has(rows[i + 2])) continue;
-    fn(rows[i], rows[i + 1], rows[i + 4], rows[i + 5], rows[i + vi]);
-  }
-}
-
-function archiveTimeline() {
-  const out = D.snapshots.map(() => null);
-  scanArchive((snap, arch, cls, n, v) => {
-    let cell = out[snap];
-    if (!cell) cell = out[snap] = { kernel: 0, total: 0, n: 0, kn: 0 };
-    cell.total += v;
-    cell.n += n;
-    if (cls !== OTHER) { cell.kernel += v; cell.kn += n; }
-  });
-  return out;
-}
 
 /** A range input over the snapshots that survives its own redraws. */
 function snapshotChooser(host, redraw) {
@@ -850,39 +923,39 @@ function snapshotChooser(host, redraw) {
 }
 
 function viewArchive(host) {
-  const tl = archiveTimeline();
-  const live = tl.map((c, i) => (c ? i : -1)).filter(i => i >= 0);
+  const tl = timeline();
+  const live = tl.totals.map((c, i) => (c && c.total ? i : -1)).filter(i => i >= 0);
   if (!live.length) {
     host.innerHTML = '<div class="card"><div class="empty">' +
       "Nothing selected.</div></div>";
     return;
   }
   const firstIdx = live[0], lastIdx = live[live.length - 1];
-  const first = tl[firstIdx], last = tl[lastIdx];
-  // Measure the span from the snapshot dates rather than counting rows: the
-  // step is only monthly by default, --every can make it anything.
+  const first = tl.totals[firstIdx], last = tl.totals[lastIdx];
   const years = (snapDate(D.snapshots[lastIdx]) - snapDate(D.snapshots[firstIdx]))
                 / (365.2425 * 86400 * 1000);
   const growth = last.total - first.total;
+  const xs = D.snapshots.map(shortStamp);
+  const all = state.series.size === D.series.length;
 
   const sizeCard = card(host, "Total size of the archive",
-    "Every package published across all " + D.series.length + " series, with " +
-    "each file in pool/ counted once however many series reference it.");
+    (all ? "Every package published across all " + D.series.length + " series"
+         : "Every package published across the " + state.series.size +
+           " selected series") +
+    ", with each file in pool/ counted once however many of them reference it.");
   lineChart(sizeCard, {
-    x: D.snapshots.map(shortStamp),
+    x: xs,
     xTitle: i => stamp(D.snapshots[i]),
     fmt: bytes,
     series: [
       { name: "whole archive", colour: "var(--s1)",
-        points: tl.map(c => (c ? c.total : null)) },
+        points: tl.totals.map(c => (c && c.total ? c.total : null)) },
       { name: "kernels", colour: "var(--s2)",
-        points: tl.map(c => (c ? c.kernel : null)) },
+        points: tl.totals.map(c => (c && c.total ? c.kernel : null)) },
     ],
   });
   legend(sizeCard, [["whole archive", "var(--s1)"], ["kernels", "var(--s2)"]]);
   const sign = growth >= 0 ? "+" : "-";
-  // Only annualise once there is a year to annualise from; scaling up a
-  // three-month window produces a confident-looking number that means nothing.
   const rate = years >= 1
     ? ", " + sign + bytes(Math.abs(growth) / years) + " a year"
     : "";
@@ -895,21 +968,38 @@ function viewArchive(host) {
     pct(first.total ? first.kernel / first.total : 0) + " of it to " +
     pct(last.total ? last.kernel / last.total : 0) + ".");
 
+  const splitCard = card(host, "Archive size, per " + tl.split.label,
+    tl.split.key === "arch"
+      ? "One line per architecture. 'all' and 'source' are lines of their own: " +
+        "the archive keeps one copy of each, not one per architecture."
+      : "One line per series. A file two series share is counted in both, so " +
+        "these add up to more than the line above.");
+  const sizeLines = splitLines(tl, c => c.total);
+  lineChart(splitCard, {
+    x: xs,
+    xTitle: i => stamp(D.snapshots[i]),
+    fmt: bytes,
+    series: sizeLines.series,
+  });
+  legend(splitCard, sizeLines.series.map(l => [l.name, l.colour]));
+  dropNote(splitCard, sizeLines);
+
   const shareCard = card(host, "Kernel share of the whole archive",
-    "The same two lines as a ratio.");
+    "The two lines from the first chart as a ratio.");
   lineChart(shareCard, {
-    x: D.snapshots.map(shortStamp),
+    x: xs,
     xTitle: i => stamp(D.snapshots[i]),
     fmt: v => v.toFixed(0) + "%",
     minMax: 10,
     height: 240,
     series: [{ name: "kernel share", colour: "var(--s1)",
-               points: tl.map(c => (c && c.total ? 100 * c.kernel / c.total : null)) }],
+               points: tl.totals.map(
+                 c => (c && c.total ? 100 * c.kernel / c.total : null)) }],
   });
 
   snapshotChooser(host, body => {
     const byArch = new Map();
-    scanArchive((snap, arch, cls, n, v) => {
+    scanClass((snap, smask, arch, cls, n, v) => {
       if (snap !== state.snap) return;
       let a = byArch.get(arch);
       if (!a) byArch.set(arch, a = { kernel: 0, total: 0, n: 0 });
@@ -940,8 +1030,8 @@ function viewArchive(host) {
     wrap.className = "tablewrap";
     let html = "<table><thead><tr><th>Snapshot</th><th>Archive</th>" +
                "<th>Kernels</th><th>Share</th><th>Packages</th></tr></thead><tbody>";
-    tl.forEach((cell, i) => {
-      if (!cell) return;
+    tl.totals.forEach((cell, i) => {
+      if (!cell || !cell.total) return;
       html += "<tr><td>" + stamp(D.snapshots[i]) + '</td><td class="num">' +
         bytes(cell.total) + '</td><td class="num">' + bytes(cell.kernel) +
         '</td><td class="num">' + pct(cell.total ? cell.kernel / cell.total : 0) +
@@ -1002,10 +1092,8 @@ function note(host, text) {
 /* ------------------------------------------------------------------ render */
 
 function updateTiles() {
-  const archive = state.view === "archive";
-  const cur = archive ? (archiveTimeline()[state.snap] ||
-                         { kernel: 0, total: 0, kn: 0, n: 0 })
-                      : snapshotTotals(state.snap);
+  const cur = snapshotTotals(state.snap);
+  const archive = state.series.size === D.series.length;
   const scope = archive ? "whole archive" : "selected";
   document.getElementById("tile-kernel").textContent = bytes(cur.kernel);
   document.getElementById("tile-kernel-note").textContent =
@@ -1042,10 +1130,8 @@ function render() {
   else viewTable(host, timeline());
 }
 
-document.querySelectorAll(".tab").forEach(t => {
-  if (t.dataset.view === "archive" && !HAS_ARCHIVE) { t.hidden = true; return; }
-  t.addEventListener("click", () => { state.view = t.dataset.view; render(); });
-});
+document.querySelectorAll(".tab").forEach(t =>
+  t.addEventListener("click", () => { state.view = t.dataset.view; render(); }));
 
 document.getElementById("themebtn").addEventListener("click", () => {
   const root = document.documentElement;
@@ -1065,10 +1151,10 @@ document.getElementById("footer").innerHTML =
   "those images - the same rule as the <code>kernel-sizes</code> script.<br>" +
   "A file published to several pockets is counted once, so the totals are what " +
   "the archive actually stores rather than the sum of the indexes.<br>" +
-  "Series share one pool/, so the per-series views cannot add up to the " +
-  "archive: summing them counts a file once per series that references it. " +
-  "The <b>Whole archive</b> tab is deduplicated across series and is the one " +
-  "to read for a total.";
+  "Series share one pool/ too, so every total here counts a shared file once " +
+  "for the set you have ticked. The one place that does not hold is a " +
+  "per-series line or row: a file jammy and noble both reference belongs to " +
+  "each of their sizes, so those add up to more than the archive holds.";
 
 let resizeTimer = null;
 window.addEventListener("resize", () => {
