@@ -29,6 +29,13 @@ from kernel_sizes import (  # noqa: E402
 )
 
 
+def series_order(names):
+    """Release order, so the page can treat a higher index as 'more recent'."""
+    return sorted(names, key=lambda n: (CANDIDATE_SERIES.index(n)
+                                        if n in CANDIDATE_SERIES else len(CANDIDATE_SERIES),
+                                        n))
+
+
 def add_common(parser):
     parser.add_argument("-s", "--series", action="append", metavar="SERIES",
                         help="series to include; repeatable "
@@ -127,7 +134,8 @@ def encode(byclass, byflavour, snaps, series_list):
 
     used_snaps = sorted({k[0] for k in byclass})
     snap_i = {v: i for i, v in enumerate(used_snaps)}
-    series, series_i = index({k[1] for k in byclass})
+    series = series_order({k[1] for k in byclass})
+    series_i = {v: i for i, v in enumerate(series)}
     arches, arch_i = index({k[2] for k in byclass} | {k[2] for k in byflavour})
     comps, comp_i = index({k[3] for k in byclass})
     classes, class_i = index({k[5] for k in byclass})
@@ -160,7 +168,22 @@ def encode(byclass, byflavour, snaps, series_list):
     }
 
 
+def write_html(path, payload):
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "template.html")) as f:
+        template = f.read()
+    html = template.replace("/*DATA*/null/*DATA*/", payload)
+    with open(path, "w") as f:
+        f.write(html)
+    log("wrote %s (%.1f MiB)" % (path, len(html) / 2 ** 20))
+
+
 def cmd_build(args):
+    if args.from_json:
+        with open(args.from_json) as f:
+            payload = f.read()
+        write_html(args.output, payload)
+        return 0
     builder = make_builder(args)
     snaps = snapshots(args.from_, args.to, args.every)
     series_list = args.series or CANDIDATE_SERIES
@@ -183,13 +206,7 @@ def cmd_build(args):
             f.write(payload)
         log("wrote %s (%.1f MiB)" % (args.json, len(payload) / 2 ** 20))
     if args.output:
-        here = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(here, "template.html")) as f:
-            template = f.read()
-        html = template.replace("/*DATA*/null/*DATA*/", payload)
-        with open(args.output, "w") as f:
-            f.write(html)
-        log("wrote %s (%.1f MiB)" % (args.output, len(html) / 2 ** 20))
+        write_html(args.output, payload)
     return 0
 
 
@@ -250,6 +267,10 @@ def main():
                    help="HTML output (default: %(default)s)")
     p.add_argument("--json", metavar="FILE",
                    help="also write the raw dataset here")
+    p.add_argument("--from-json", dest="from_json", metavar="FILE",
+                   help="re-render the page from a dataset written by --json, "
+                        "skipping the cache entirely; handy after editing "
+                        "template.html")
     p.set_defaults(func=cmd_build)
 
     p = sub.add_parser("report", help="text summary of a single snapshot")

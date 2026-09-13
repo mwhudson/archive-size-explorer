@@ -41,8 +41,19 @@ $ ./kernel-sizes-explorer report -s noble --snapshot 2025-09
 ```
 
 `--offline` re-aggregates whatever is already cached without touching the
-network, which is the fast way to try a different slice of the same data.
+network, which is the fast way to try a different slice of the same data. Even
+so, re-aggregating the full window takes a couple of minutes, so `build` can
+also write the dataset out with `--json` and re-render straight from it:
+
+```console
+$ ./kernel-sizes-explorer build --json data.json -o kernels.html
+$ ./kernel-sizes-explorer build --from-json data.json -o kernels.html   # instant
+```
+
 `cache` says how much disk the cache is using; deleting the directory is safe.
+
+For scale: the full default run is 43 monthly snapshots across 12 series, which
+was 12.2 GB of downloads, 889 MB of cache, and a 6.9 MB page.
 
 ## What counts as a kernel
 

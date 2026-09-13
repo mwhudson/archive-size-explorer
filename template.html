@@ -210,11 +210,28 @@ const DATA = /*DATA*/null/*DATA*/;
 const D = DATA.dims;
 const OTHER = D.classes.indexOf(DATA.otherClass);
 const SLOTS = 8;                       // categorical slots; never cycled
-const MAX_LINES = SLOTS;
 
-// Colour follows the entity: a series keeps its slot no matter what else is
-// selected, so filtering never repaints the survivors.
-const seriesColour = i => "var(--s" + ((i % SLOTS) + 1) + ")";
+// Colour follows the entity, not its rank: once a series holds a slot it keeps
+// it until it is deselected, so filtering never repaints the survivors.  There
+// are only SLOTS colours and none are ever reused or generated, so a selection
+// wider than that leaves the extras uncoloured -- they stay in the table.
+const slotOf = new Map();
+
+function assignSlots() {
+  for (const s of [...slotOf.keys()]) {
+    if (!state.series.has(s)) slotOf.delete(s);
+  }
+  const used = new Set(slotOf.values());
+  for (const s of [...state.series].sort((a, b) => a - b)) {
+    if (slotOf.has(s)) continue;
+    for (let i = 0; i < SLOTS; i++) {
+      if (!used.has(i)) { slotOf.set(s, i); used.add(i); break; }
+    }
+  }
+}
+
+const seriesColour = s =>
+  (slotOf.has(s) ? "var(--s" + (slotOf.get(s) + 1) + ")" : null);
 
 /* ------------------------------------------------------------------ state */
 
@@ -237,7 +254,7 @@ const state = {
   for (let i = 0; i < rows.length; i += 9) {
     if (rows[i] === last) alive.add(rows[i + 1]);
   }
-  const picked = [...alive].sort((a, b) => b - a).slice(0, MAX_LINES);
+  const picked = [...alive].sort((a, b) => b - a).slice(0, SLOTS);
   picked.forEach(s => state.series.add(s));
   if (!state.series.size) D.series.forEach((_, i) => state.series.add(i));
   D.arches.forEach((_, i) => state.arch.add(i));
@@ -499,7 +516,7 @@ function chipRow(label, values, selected, onToggle, colourFor) {
     if (colourFor) {
       const sw = document.createElement("span");
       sw.className = "swatch";
-      sw.style.background = colourFor(i);
+      sw.style.background = colourFor(i) || "var(--muted)";
       b.appendChild(sw);
     }
     b.appendChild(document.createTextNode(v));
@@ -556,10 +573,9 @@ function buildFilters() {
 
 /* ------------------------------------------------------------------- views */
 
-/** Series that can be drawn without two of them sharing a colour slot. */
+/** Selected series that hold a colour slot, so can be drawn unambiguously. */
 function drawableSeries() {
-  const sel = [...state.series].sort((a, b) => a - b);
-  return sel.filter(s => s < SLOTS || !state.series.has(s - SLOTS));
+  return [...state.series].sort((a, b) => a - b).filter(s => slotOf.has(s));
 }
 
 function viewTime(host, tl) {
@@ -583,9 +599,11 @@ function viewTime(host, tl) {
   });
   legend(shareCard, drawn.map(s => [D.series[s], seriesColour(s)]));
   if (dropped) {
-    note(shareCard, dropped + " more selected series are not drawn: there are " +
-         "only " + SLOTS + " colour slots and reusing one would be ambiguous. " +
-         "The table view has every series.");
+    note(shareCard, dropped + (dropped === 1 ? " more selected series is"
+                               : " more selected series are") + " not drawn: all " +
+         SLOTS + " colour slots are taken, and reusing one would be " +
+         "ambiguous. Deselect a series to free a colour, or use the table " +
+         "view, which has every series.");
   }
 
   const absCard = card(host, "Kernel bytes",
@@ -806,6 +824,7 @@ function note(host, text) {
 /* ------------------------------------------------------------------ render */
 
 function render() {
+  assignSlots();
   buildFilters();
   const tl = timeline();
   const cur = tl.totals[state.snap] || { kernel: 0, total: 0, kn: 0, n: 0 };
