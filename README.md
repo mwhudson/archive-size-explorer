@@ -115,6 +115,21 @@ architectures. Source packages (the `.dsc`/tarball/diff sizes from `Sources`)
 appear the same way, under `source`. `kernel-sizes` reports these separately
 too.
 
+**Architectures come from the index directory, not the Architecture field.**
+Packages in `binary-amd64v3` declare `Architecture: amd64` while being a
+separate build at a separate pool path:
+
+```
+pool/main/r/rust-threecpio/3cpio_0.14.0-1ubuntu1_amd64.deb     285342 bytes
+pool/main/r/rust-threecpio/3cpio_0.14.0-1ubuntu1_amd64v3.deb   285366 bytes
+```
+
+Believing the field would file both under `amd64`, collide them on
+`(package, version, architecture)`, and throw one of the two files away — for
+stonking at 2026-09 that is 103 GiB, an entire port, invisible. So a row is
+filed under the directory it came from, with `Architecture: all` as the one
+exception, since that genuinely *is* one file listed in every directory.
+
 ## Caveats
 
 * It counts what the indexes **publish** at a given moment, which is not quite

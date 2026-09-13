@@ -378,13 +378,22 @@ class Row:
         self.component = component
 
 
-def load_slim(cache, sha, component, pocket_bit, into):
+def load_slim(cache, sha, component, dir_arch, pocket_bit, into):
     """Merge one cached index into the (pkg, ver, arch) -> Row map.
 
     A package published to more than one pocket is one file in the pool, so it
     is recorded once with a bitmask of every pocket it appears in.  Whichever
     component we see first wins; components are walked in archive order so that
     means main beats universe for the rare package that has moved.
+
+    The architecture a row is filed under is the *index directory's*, not the
+    Architecture field, with one exception.  Packages in binary-amd64v3 declare
+    "Architecture: amd64" while being a separate build at a separate pool path
+    (foo_1.0_amd64v3.deb beside foo_1.0_amd64.deb), so trusting the field would
+    key both to the same row and quietly drop one of the two files.  The
+    exception is Architecture: all, which really is one file listed in every
+    binary-<arch> directory, and has to collapse to a single "all" row rather
+    than being counted once per architecture.
     """
     data = cache.get_blob(sha)
     if not data:
@@ -393,6 +402,8 @@ def load_slim(cache, sha, component, pocket_bit, into):
         if not line:
             continue
         pkg, ver, arch, size, isize, src, prov = line.split(b"\t")
+        if arch != b"all" and dir_arch is not None:
+            arch = dir_arch
         key = (pkg, ver, arch)
         row = into.get(key)
         if row is None:
@@ -501,12 +512,16 @@ def suite_name(series, pocket):
 
 
 def index_paths(components, arches, want_sources):
-    """The Release-relative paths we want, in a stable component-major order."""
+    """The Release-relative paths we want, in a stable component-major order.
+
+    Yields the architecture of the index directory alongside the path.  That is
+    not always the Architecture the packages inside declare -- see load_slim.
+    """
     for component in components:
         for arch in arches:
-            yield component, "%s/binary-%s/Packages" % (component, arch)
+            yield component, arch, "%s/binary-%s/Packages" % (component, arch)
         if want_sources:
-            yield component, "%s/source/Sources" % component
+            yield component, "source", "%s/source/Sources" % component
 
 
 class Builder:
@@ -591,11 +606,13 @@ class Builder:
             arches = self.arches or entries.get("_arches", "").split()
             components = [c for c in self.components
                           if c in entries.get("_components", "").split()]
-            for component, path in index_paths(components, arches, self.sources):
+            for component, arch, path in index_paths(components, arches,
+                                                     self.sources):
                 for suffix in (".xz", ".gz", ""):
                     sha = entries.get(path + suffix)
                     if sha:
-                        wanted.append((component, pocket, path + suffix, sha, algo))
+                        wanted.append((component, arch, pocket, path + suffix,
+                                       sha, algo))
                         break
         return wanted if found else None
 
@@ -607,11 +624,11 @@ class Builder:
         wanted = self.plan(snapshot, series)
         if wanted is None:
             return None
-        missing = [w for w in wanted if not self.cache.have_blob(w[3])]
+        missing = [w for w in wanted if not self.cache.have_blob(w[4])]
         self.hits += len(wanted) - len(missing)
         if missing:
             suite_of = {}
-            for component, pocket, path, sha, algo in missing:
+            for component, _arch, pocket, path, sha, algo in missing:
                 suite_of[sha] = (suite_name(series, pocket), path, algo)
             with ThreadPoolExecutor(max_workers=self.fetcher.jobs) as pool:
                 list(pool.map(
@@ -623,9 +640,10 @@ class Builder:
         bit = {p: 1 << i for i, p in enumerate(POCKETS)}
         for component in self.components:
             for pocket in self.pockets:
-                for c, p, path, sha, _algo in wanted:
+                for c, a, p, path, sha, _algo in wanted:
                     if c == component and p == pocket:
-                        load_slim(self.cache, sha, component, bit[pocket], rows)
+                        load_slim(self.cache, sha, component, a.encode(),
+                                  bit[pocket], rows)
         return rows
 
     def build_series(self, snapshot, series):
