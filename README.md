@@ -57,6 +57,55 @@ whole archive (pool deduped)               4.1 TiB /    9.6 TiB   42.6%
 ...files shared between series             1.2 TiB  (12.7% of the archive, ...)
 ```
 
+`breakdown` answers the other half of the question — if kernels are 43% of the
+archive, where is the rest going? It ranks source packages by the bytes they
+occupy in `pool/`, counted the same deduplicated way as the archive-wide line
+above:
+
+```console
+$ ./kernel-sizes-explorer breakdown --no-kernels --family -n 6
+20260901; 12 series (bionic, focal, jammy, ...)
+    bytes   %arch   files  vers  family
+488.8 GiB   4.95%   47618    12  gcc-cross
+284.7 GiB   2.88%   38828    12  gcc-cross-ports
+283.8 GiB   2.87%    5382    15  openjdk
+182.3 GiB   1.84%   29756    14  gcc
+135.8 GiB   1.37%   10097    31  nvidia-graphics-drivers
+135.0 GiB   1.37%   21240    21  llvm-toolchain
+  4.1 TiB  42.09%                ...and 49972 more
+```
+
+`--family` is what makes that readable: it strips a trailing version token, so
+`gcc-13-cross` and `gcc-14-cross` collapse into one `gcc-cross` row and the
+`vers` column tells you how many are being carried at once. Only a token
+introduced by a dash counts, so `dotnet8` and `libc6` keep their digits —
+guessing at those would merge far more than it split.
+
+Give it a window instead of a single snapshot and it tracks each row over time.
+`--match` narrows to one thing you care about:
+
+```console
+$ ./kernel-sizes-explorer breakdown --from 2026-07 --match='-1[0-9]-[0-9]+$'
+source                      202607    202608    202609   growth      share
+archive total              9.0 TiB   9.3 TiB   9.6 TiB
+...of which kernels        3.7 TiB   3.8 TiB   4.1 TiB
+
+libcublas-13-1             4.1 GiB   8.3 GiB   8.3 GiB    2.00x     +0.04pp
+nsight-systems-13-1        3.1 GiB   6.2 GiB   6.2 GiB    2.00x     +0.03pp
+libcublas-13-3               0.0 B     0.0 B   4.2 GiB      new     +0.04pp
+libcublas-13-2               0.0 B   4.2 GiB   4.2 GiB      new     +0.04pp
+...
+```
+
+That one doubled rather than being shared, incidentally: resolute and stonking
+carry *different* upstream versions of `libcublas-13-1` (13.2.1.1 and 13.2.2.2),
+so each series pays for its own copy.
+
+Read the share column rather than the growth one. The archive grows on its own
+as series pile up — the snapshot service never drops an EOL suite — so an
+absolute multiplier flatters every row alike; a family is only worth worrying
+about if it is outgrowing the thing it sits in.
+
 `--offline` re-aggregates whatever is already cached without touching the
 network, which is the fast way to try a different slice of the same data. Even
 so, re-aggregating the full window takes a couple of minutes, so `build` can

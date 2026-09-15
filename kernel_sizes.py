@@ -416,12 +416,14 @@ def load_slim(cache, sha, component, dir_arch, pocket_bit, into):
             row.prov = row.prov or prov == b"1"
 
 
-def aggregate(rows):
-    """Turn one snapshot's worth of rows into the two output tables.
+def kernel_predicate(rows):
+    """Build the is-this-a-kernel test for one snapshot's worth of rows.
 
     Kernel-ness follows kernel-sizes: every binary of a source that ships
     something providing linux-image, plus any linux-objects-*-<kver> built for
-    a kernel version seen in those images.
+    a kernel version seen in those images.  Both halves need the whole snapshot
+    in hand before anything can be judged, which is why this is a factory
+    rather than a plain function.
     """
     kernel_sources = set()
     kvers = set()
@@ -438,13 +440,23 @@ def aggregate(rows):
             r"^linux-objects-.+-(%s)$"
             % "|".join(re.escape(v) for v in sorted(kvers)))
 
+    def is_kernel(name, row):
+        return row.src in kernel_sources or (
+            objects_re is not None and objects_re.match(name) is not None)
+
+    return is_kernel
+
+
+def aggregate(rows):
+    """Turn one snapshot's worth of rows into the two output tables."""
+    is_kernel_row = kernel_predicate(rows)
+
     by_class = defaultdict(lambda: [0, 0, 0])    # smask, arch, comp, mask, class
     by_flavour = defaultdict(lambda: [0, 0, 0])  # smask, arch, mask, flavour
 
     for (pkg, _ver, _arch), row in rows.items():
         name = pkg.decode()
-        is_kernel = row.src in kernel_sources or (
-            objects_re is not None and objects_re.match(name))
+        is_kernel = is_kernel_row(name, row)
         if not is_kernel:
             cls = OTHER
         elif row.arch == "source":

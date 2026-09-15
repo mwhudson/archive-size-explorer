@@ -8,6 +8,7 @@ the expensive first run is the only expensive run.
 
   kernel-sizes-explorer build -o kernels.html     # fetch + write the page
   kernel-sizes-explorer report -s noble           # text summary of one snapshot
+  kernel-sizes-explorer breakdown --family        # where the space actually goes
   kernel-sizes-explorer cache                     # what the cache is holding
 
 The output of "build" is a single self-contained HTML file: open it with
@@ -18,6 +19,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
 import time
 
@@ -25,7 +27,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from kernel_sizes import (  # noqa: E402
     Builder, Cache, Fetcher, CANDIDATE_SERIES, DEFAULT_COMPONENTS, OTHER,
-    POCKETS, aggregate, default_cache_dir, log, merge_rows, snapshots,
+    POCKETS, aggregate, default_cache_dir, kernel_predicate, log, merge_rows,
+    snapshots,
 )
 
 
@@ -305,6 +308,176 @@ def cmd_report(args):
     return 0
 
 
+# Trailing version token in a source name: the -14 of gcc-14-cross, the -8.0 of
+# mysql-8.0, the -13-2 of libcublas-13-2.  Only a token introduced by a dash
+# counts, so dotnet8 and libc6 keep their digits -- guessing at those would
+# merge far more than it would split.
+VERSION_TOKEN = re.compile(r"-(\d+(?:[.-]\d+)*)(?=$|-)")
+
+
+def family_of(src):
+    """Collapse a source name to the family its versioned siblings share.
+
+    gcc-14-cross and gcc-13-cross both become gcc-cross; libcublas-13-1 and
+    libcublas-13-2 both become libcublas.  That is what turns "34 sources I do
+    not recognise" into "one family carrying six simultaneous versions".
+    """
+    stripped = VERSION_TOKEN.sub("", src, count=1)
+    return stripped or src
+
+
+def collect_sources(builder, snaps, series_list, match=None, family=False,
+                    kernels="include", progress=True):
+    """Bytes per source package (or family) per snapshot.
+
+    Every pool file is counted once, the same way the archive-wide totals are:
+    a snapshot's series are merged before anything is counted, so a file that
+    jammy and noble both reference adds its size once rather than twice.  These
+    numbers are therefore comparable to the "whole archive" line in report, and
+    deliberately not to the per-series lines above it.
+    """
+    totals = {}       # (snap, group) -> [bytes, files, {source names}]
+    archive = {}      # snap -> [all bytes, kernel bytes]
+    seen = []
+    started = time.time()
+    for i, snap in enumerate(snaps, 1):
+        whole = {}
+        for series in series_list:
+            try:
+                rows = builder.load_rows(snap, series)
+            except SkipOffline:
+                continue
+            if rows is None:
+                continue
+            if series not in seen:
+                seen.append(series)
+            merge_rows(whole, rows, 1 << series_list.index(series))
+            del rows
+        if whole:
+            is_kernel_row = kernel_predicate(whole)
+            overall = archive.setdefault(snap, [0, 0])
+            for (pkg, _ver, _arch), row in whole.items():
+                name = pkg.decode()
+                kernel = is_kernel_row(name, row)
+                overall[0] += row.size
+                if kernel:
+                    overall[1] += row.size
+                if kernels == "only" and not kernel:
+                    continue
+                if kernels == "skip" and kernel:
+                    continue
+                if match is not None and not match.search(row.src):
+                    continue
+                group = family_of(row.src) if family else row.src
+                acc = totals.setdefault((snap, group), [0, 0, set()])
+                acc[0] += row.size
+                acc[1] += 1
+                acc[2].add(row.src)
+            del whole
+        if progress:
+            log("[%d/%d] %s  %d blobs fetched (%.1f MiB), %d cached, %.0fs"
+                % (i, len(snaps), snap, builder.downloads,
+                   builder.fetcher.bytes_downloaded / 2 ** 20,
+                   builder.hits, time.time() - started))
+    return totals, archive, sorted(seen)
+
+
+def print_one_snapshot(totals, archive, snap, groups, family):
+    """Ranked table for a single point in time."""
+    total = archive[snap][0]
+    print("%9s %7s %7s %5s  %s"
+          % ("bytes", "%arch", "files", "vers", "family" if family else "source"))
+    for group in groups:
+        size, files, members = totals[(snap, group)]
+        print("%9s %6.2f%% %7d %5d  %s"
+              % (human(size), 100.0 * size / total if total else 0,
+                 files, len(members), group))
+    shown = sum(totals[(snap, g)][0] for g in groups)
+    rest = sum(v[0] for (s, _g), v in totals.items() if s == snap) - shown
+    others = sum(1 for (s, _g) in totals if s == snap) - len(groups)
+    if others > 0:
+        print("%9s %6.2f%% %7s %5s  ...and %d more"
+              % (human(rest), 100.0 * rest / total if total else 0,
+                 "", "", others))
+
+
+def print_over_time(totals, archive, used, groups, family):
+    """One row per group, one column per snapshot, plus how it moved.
+
+    The share column is the one to read.  The archive itself grows as series
+    pile up -- the snapshot service never drops an EOL suite -- so an absolute
+    multiplier flatters every row alike; a family only deserves attention if it
+    is outgrowing the thing it sits in.
+    """
+    cols = "".join("%10s" % s[:6] for s in used)
+    first, last = used[0], used[-1]
+    print("%-24s%s %8s %10s"
+          % ("family" if family else "source", cols, "growth", "share"))
+    for label, which in (("archive total", 0), ("...of which kernels", 1)):
+        print("%-24s%s" % (label,
+                           "".join("%10s" % human(archive[s][which])
+                                   for s in used)))
+    print()
+    for group in groups:
+        vals = [totals.get((s, group), [0])[0] for s in used]
+        cells = "".join("%10s" % human(v) for v in vals)
+        grew = "%7.2fx" % (vals[-1] / vals[0]) if vals[0] else "%8s" % "new"
+        share0 = 100.0 * vals[0] / archive[first][0] if archive[first][0] else 0
+        share1 = 100.0 * vals[-1] / archive[last][0] if archive[last][0] else 0
+        print("%-24s%s %8s %+9.2fpp"
+              % (group[:24], cells, grew, share1 - share0))
+
+
+def cmd_breakdown(args):
+    builder = make_builder(args)
+    if args.from_ or args.to:
+        snaps = snapshots(args.from_, args.to, args.every)
+    elif args.snapshot:
+        snaps = snapshots(args.snapshot, args.snapshot, "month")
+    else:
+        snaps = snapshots(None, None, "month")[-1:]
+    series_list = args.series or CANDIDATE_SERIES
+    match = re.compile(args.match) if args.match else None
+    kernels = "include"
+    if args.kernels_only:
+        kernels = "only"
+    elif args.no_kernels:
+        kernels = "skip"
+
+    totals, archive, seen = collect_sources(
+        builder, snaps, series_list, match=match, family=args.family,
+        kernels=kernels, progress=len(snaps) > 1)
+    if not archive:
+        log("nothing collected -- wrong window, or an --offline run with a "
+            "cold cache")
+        return 1
+
+    used = sorted(archive)
+    last = used[-1]
+    # Rank on the most recent snapshot, so the table answers "what is big now".
+    # A group that has since vanished still ranks on its largest showing rather
+    # than dropping silently off the end of the list.
+    rank = {}
+    for (snap, group), acc in totals.items():
+        best = rank.setdefault(group, [0, 0])
+        if snap == last:
+            best[0] = acc[0]
+        best[1] = max(best[1], acc[0])
+    groups = sorted(rank, key=lambda g: (-rank[g][0], -rank[g][1], g))[:args.top]
+
+    when = (used[0][:8] if len(used) == 1
+            else "%s..%s, %d snapshots" % (used[0][:8], used[-1][:8], len(used)))
+    print("%s; %d series (%s)" % (when, len(seen), ", ".join(seen)))
+    if not groups:
+        print("nothing matched")
+        return 0
+    if len(used) == 1:
+        print_one_snapshot(totals, archive, last, groups, args.family)
+    else:
+        print_over_time(totals, archive, used, groups, args.family)
+    return 0
+
+
 def cmd_cache(args):
     cache = Cache(args.cache)
     files, total = cache.usage()
@@ -336,6 +509,28 @@ def main():
     p.add_argument("--snapshot", metavar="YYYY-MM",
                    help="which snapshot (default: the most recent month)")
     p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("breakdown",
+                       help="where the archive's space goes, by source package")
+    add_common(p)
+    add_window(p)
+    p.add_argument("--snapshot", metavar="YYYY-MM",
+                   help="a single snapshot (default: the most recent month); "
+                        "ignored when --from/--to are given")
+    p.add_argument("-n", "--top", type=int, default=25, metavar="N",
+                   help="how many rows to show (default: %(default)s)")
+    p.add_argument("--family", action="store_true",
+                   help="group versioned siblings together, so gcc-13-cross "
+                        "and gcc-14-cross count as one gcc-cross")
+    p.add_argument("--match", metavar="REGEX",
+                   help="only sources whose name matches, e.g. "
+                        "--match -- '-13-[0-9]+$' for one CUDA stack")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--no-kernels", action="store_true",
+                   help="drop kernel packages, which otherwise fill the table")
+    g.add_argument("--kernels-only", action="store_true",
+                   help="keep only kernel packages")
+    p.set_defaults(func=cmd_breakdown)
 
     p = sub.add_parser("cache", help="show what the cache is holding")
     p.add_argument("--cache", default=default_cache_dir(), metavar="DIR")
