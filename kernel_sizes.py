@@ -381,6 +381,32 @@ def extract_kver(pkg):
     return None
 
 
+OBJECTS_PREFIX = "linux-objects-"
+
+
+def is_objects_for(name, kvers):
+    """True for linux-objects-<anything>-<kver>, for a kver we have seen.
+
+    The obvious spelling is a regex, ^linux-objects-.+-(kver1|kver2|...)$, but
+    the alternation ends up holding every kernel version in the snapshot: six
+    thousand branches and a 140 KB pattern for 2026-09, walked one branch at a
+    time for every package that clears the prefix.  Trying each "-" as the
+    split point and looking the tail up in the set instead is about twenty
+    times faster and matches exactly the same names, since the regex compared
+    those tails literally too.  The search starts at 1 because the ".+" needs
+    at least one character before the version.
+    """
+    if not name.startswith(OBJECTS_PREFIX):
+        return False
+    rest = name[len(OBJECTS_PREFIX):]
+    i = rest.find("-", 1)
+    while i != -1:
+        if rest[i + 1:] in kvers:
+            return True
+        i = rest.find("-", i + 1)
+    return False
+
+
 # ---------------------------------------------------------------- aggregating
 
 
@@ -455,15 +481,8 @@ def kernel_predicate(rows):
         if kver is not None:
             kvers.add(kver)
 
-    objects_re = None
-    if kvers:
-        objects_re = re.compile(
-            r"^linux-objects-.+-(%s)$"
-            % "|".join(re.escape(v) for v in sorted(kvers)))
-
     def is_kernel(name, src):
-        return src in kernel_sources or (
-            objects_re is not None and objects_re.match(name) is not None)
+        return src in kernel_sources or is_objects_for(name, kvers)
 
     return is_kernel
 
