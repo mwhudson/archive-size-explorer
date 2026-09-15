@@ -35,8 +35,9 @@ $ ./kernel-sizes-explorer build -o kernels.html
 
 That is the whole thing: every series, every architecture, every pocket, monthly
 from 2023-03 to today. The first run takes an hour or so and pulls down roughly
-10-15 GB of indexes; everything it fetches is reduced and cached, so later runs
-only fetch what has actually changed. Narrow it down while you are experimenting:
+10-15 GB of indexes; everything it fetches is reduced and cached, and so is each
+snapshot's aggregate, so later runs only fetch and re-aggregate what has
+actually changed. Narrow it down while you are experimenting:
 
 ```console
 $ ./kernel-sizes-explorer build -s noble -s plucky --from 2025-01 -o kernels.html
@@ -115,9 +116,10 @@ absolute multiplier flatters every row alike; a family is only worth worrying
 about if it is outgrowing the thing it sits in.
 
 `--offline` re-aggregates whatever is already cached without touching the
-network, which is the fast way to try a different slice of the same data. Even
-so, re-aggregating the full window takes a couple of minutes, so `build` can
-also write the dataset out with `--json` and re-render straight from it:
+network, which is the fast way to try a different slice of the same data. A
+slice the aggregate cache has already seen comes back in a second or two; a new
+one has to be aggregated from the blobs, so `build` can also write the dataset
+out with `--json` and re-render straight from it:
 
 ```console
 $ ./kernel-sizes-explorer build --json data.json -o kernels.html
@@ -127,7 +129,8 @@ $ ./kernel-sizes-explorer build --from-json data.json -o kernels.html   # instan
 `cache` says how much disk the cache is using; deleting the directory is safe.
 
 For scale: the full default run is 43 monthly snapshots across 12 series, which
-was 12.5 GB of downloads, 869 MB of cache, and a 9.9 MB page.
+was 12.5 GB of downloads, 873 MiB of cache (of which 4.0 MiB is the
+aggregates), and a 9.9 MiB page.
 
 ## What counts as a kernel
 
@@ -306,11 +309,27 @@ The unit of caching is one index blob, keyed by the checksum the suite's
 `Release` records for it — SHA256, or SHA512 for the newer suites whose
 `Release` has dropped the SHA256 section. That makes the cache dedupe
 for free — a series' release pocket never changes after release, so however many
-snapshots reference it, it is fetched and parsed exactly once. Each blob is
+snapshots reference it, it is downloaded exactly once. Each blob is
 stored "slim": one TSV line per package with just the fields the aggregation
 needs, which is around 13x smaller than the `.xz` it came from and, more
 usefully, can be re-aggregated under different filters without going back to
 the network. A full snapshot of one series costs about 11 MiB of cache.
+
+Aggregating is cached too, a snapshot at a time, because it costs far more than
+the download does: 2.9 million rows have to be parsed out of those blobs and
+folded together to produce the six thousand rows one snapshot contributes to
+the page, and counting the index lists is a second pass over the same blobs on
+top of that. A snapshot timestamp names a fixed state of the archive, so that
+answer can never change, and the entry is about 110 KiB — three orders of
+magnitude smaller than the indexes behind it. The key covers the series list
+and the architecture, pocket and component filters, since all of those change
+what comes out; the series list is in there because the series bitmask is
+positional. A run that could not read everything it wanted — an `--offline`
+miss — is never written, because from the outside it looks exactly like a
+series that does not exist yet. The practical effect is that adding this month
+to an existing page costs one snapshot's work rather than all of them: a
+rebuild that reuses 42 cached aggregates and computes one new one takes seconds
+instead of minutes.
 
 The dataset the page gets is keyed by
 `(snapshot, series, architecture, component, pocket-set, kind)`, where the

@@ -27,8 +27,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from kernel_sizes import (  # noqa: E402
     Builder, Cache, Fetcher, CANDIDATE_SERIES, DEFAULT_COMPONENTS, OTHER,
-    POCKETS, aggregate, count_index, default_cache_dir, kernel_predicate, log,
-    merge_rows, snapshots,
+    POCKETS, aggregate, aggregate_key, count_index, default_cache_dir,
+    kernel_predicate, log, merge_rows, snapshots,
 )
 
 
@@ -100,7 +100,7 @@ class SkipOffline(Exception):
     pass
 
 
-def tally_indexes(cache, plans, is_kernel, snap, into):
+def tally_indexes(cache, plans, is_kernel, into):
     """Size and entry count of every index behind one snapshot.
 
     Deliberately not deduplicated: the archive really does publish one
@@ -120,7 +120,7 @@ def tally_indexes(cache, plans, is_kernel, snap, into):
             if tally is None:
                 tally = counted[ix.sha] = count_index(cache, ix.sha, is_kernel)
             acc = into.setdefault(
-                (snap, series, ix.pocket, ix.component, ix.arch), [0, 0, 0, 0])
+                (series, ix.pocket, ix.component, ix.arch), [0, 0, 0, 0])
             acc[0] += tally[0]
             acc[1] += tally[1]
             acc[2] += ix.csize
@@ -134,41 +134,75 @@ def collect(builder, snaps, series_list, progress=True):
     than series by series: each row comes out carrying a bitmask of the series
     that reference it, which is what lets the page count a shared file once for
     any set of series you pick.
+
+    All three of a snapshot's tables are cached once computed, the index tally
+    included -- counting the indexes is a second full pass over the blobs, so
+    it is if anything the half most worth not repeating.  A snapshot timestamp
+    names a fixed state of the archive, so last month's answer cannot change,
+    and the tables are a few thousand rows against the millions of packages
+    behind them -- which is what makes adding one month to an existing page
+    cost one snapshot's work rather than all of them.
     """
     byclass = {}
     byflavour = {}
     byindex = {}
     seen = []
     started = time.time()
+    key = aggregate_key(series_list, builder.components, builder.arches,
+                        builder.pockets, builder.sources)
     for i, snap in enumerate(snaps, 1):
-        whole = {}
-        plans = []
-        for series in series_list:
-            try:
-                rows = builder.load_rows(snap, series)
-            except SkipOffline:
-                continue
-            if rows is None:
-                continue
+        cached = builder.cache.get_aggregate(snap, key)
+        if cached is not None:
+            cls_table, flav_table, idx_table, here = cached
+        else:
+            whole = {}
+            plans = []
+            here = []
+            partial = False
+            for series in series_list:
+                try:
+                    rows = builder.load_rows(snap, series)
+                except SkipOffline:
+                    partial = True
+                    continue
+                if rows is None:
+                    continue
+                here.append(series)
+                plans.append((series, builder.plan(snap, series)))
+                merge_rows(whole, rows, 1 << series_list.index(series))
+                del rows
+            cls_table = flav_table = None
+            idx_table = {}
+            if whole:
+                is_kernel = kernel_predicate(whole)
+                cls_table, flav_table = aggregate(whole, is_kernel)
+                tally_indexes(builder.cache, plans, is_kernel, idx_table)
+                del whole
+                # Never cache a run that could not read everything it wanted:
+                # an --offline miss looks exactly like a series that does not
+                # exist yet, and would be indistinguishable once written down.
+                if not partial:
+                    builder.cache.put_aggregate(snap, key, cls_table,
+                                                flav_table, idx_table, here)
+        if cls_table:
+            for k, acc in cls_table.items():
+                byclass[(snap,) + k] = acc
+            for k, acc in flav_table.items():
+                byflavour[(snap,) + k] = acc
+        for k, acc in idx_table.items():
+            byindex[(snap,) + k] = acc
+        for series in here:
             if series not in seen:
                 seen.append(series)
-            plans.append((series, builder.plan(snap, series)))
-            merge_rows(whole, rows, 1 << series_list.index(series))
-            del rows
-        if whole:
-            is_kernel = kernel_predicate(whole)
-            cls_table, flav_table = aggregate(whole, is_kernel)
-            for key, acc in cls_table.items():
-                byclass[(snap,) + key] = acc
-            for key, acc in flav_table.items():
-                byflavour[(snap,) + key] = acc
-            tally_indexes(builder.cache, plans, is_kernel, snap, byindex)
-            del whole
         if progress:
-            log("[%d/%d] %s  %d blobs fetched (%.1f MiB), %d cached, %.0fs"
-                % (i, len(snaps), snap, builder.downloads,
-                   builder.fetcher.bytes_downloaded / 2 ** 20,
-                   builder.hits, time.time() - started))
+            if cached is not None:
+                log("[%d/%d] %s  aggregate from cache, %.0fs"
+                    % (i, len(snaps), snap, time.time() - started))
+            else:
+                log("[%d/%d] %s  %d blobs fetched (%.1f MiB), %d cached, %.0fs"
+                    % (i, len(snaps), snap, builder.downloads,
+                       builder.fetcher.bytes_downloaded / 2 ** 20,
+                       builder.hits, time.time() - started))
     return byclass, byflavour, byindex, sorted(seen)
 
 

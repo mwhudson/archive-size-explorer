@@ -123,6 +123,59 @@ class Cache:
                 f.write("%s\t%s\t%d\n" % (k, entries[k][0], entries[k][1]))
         os.replace(tmp, path)
 
+    def aggregate_path(self, snapshot, key):
+        return self._path("aggregate", snapshot, key + ".tsv.gz")
+
+    def get_aggregate(self, snapshot, key):
+        """Cached (by_class, by_flavour, by_index, series), or None.
+
+        There is no "we asked and there was nothing" entry here, unlike the
+        release cache: a snapshot that aggregates to nothing costs only the
+        release lookups to find that out again, and not writing the empty case
+        keeps a half-finished run from being mistaken for a complete one.
+        """
+        path = self.aggregate_path(snapshot, key)
+        if not os.path.exists(path):
+            return None
+        by_class, by_flavour, by_index, series = {}, {}, {}, []
+        with gzip.open(path, "rt") as f:
+            for line in f:
+                kind, _, rest = line.rstrip("\n").partition("\t")
+                fields = rest.split("\t")
+                if kind == "s":
+                    series = rest.split()
+                elif kind == "c":
+                    by_class[(int(fields[0]), fields[1], fields[2],
+                              int(fields[3]), fields[4])] = [
+                        int(fields[5]), int(fields[6]), int(fields[7])]
+                elif kind == "f":
+                    by_flavour[(int(fields[0]), fields[1], int(fields[2]),
+                                fields[3])] = [
+                        int(fields[4]), int(fields[5]), int(fields[6])]
+                elif kind == "i":
+                    by_index[(fields[0], fields[1], fields[2], fields[3])] = [
+                        int(fields[4]), int(fields[5]), int(fields[6]),
+                        int(fields[7])]
+        return by_class, by_flavour, by_index, series
+
+    def put_aggregate(self, snapshot, key, by_class, by_flavour, by_index,
+                      series):
+        path = self.aggregate_path(snapshot, key)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        with gzip.open(tmp, "wt") as f:
+            f.write("s\t%s\n" % " ".join(series))
+            for k in sorted(by_class):
+                f.write("c\t%d\t%s\t%s\t%d\t%s\t%d\t%d\t%d\n"
+                        % (k[0], k[1], k[2], k[3], k[4], *by_class[k]))
+            for k in sorted(by_flavour):
+                f.write("f\t%d\t%s\t%d\t%s\t%d\t%d\t%d\n"
+                        % (k[0], k[1], k[2], k[3], *by_flavour[k]))
+            for k in sorted(by_index):
+                f.write("i\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\n"
+                        % (k[0], k[1], k[2], k[3], *by_index[k]))
+        os.replace(tmp, path)
+
     def usage(self):
         total = files = 0
         for dirpath, _, names in os.walk(self.root):
@@ -543,6 +596,28 @@ def aggregate(rows, is_kernel_row=None):
             acc[2] += row.isize * 1024
 
     return by_class, by_flavour
+
+
+# Bump when a change to aggregate() or the tables it builds would give a
+# different answer for the same inputs, so that cached aggregates written by
+# the old logic are ignored rather than silently reused.  2 added the index
+# tally, which a version 1 entry has no rows for and would read back as empty.
+AGGREGATE_VERSION = 2
+
+
+def aggregate_key(series_list, components, arches, pockets, sources):
+    """Identity of one snapshot's aggregate: everything that shapes it.
+
+    The series list is in there because the series bitmask is positional -- a
+    cached smask means nothing except against the list it was numbered from.
+    Architectures and pockets are sorted because they only decide which indexes
+    get merged, not how; components are already in archive order, which
+    load_slim relies on, so their order is kept as it stands.
+    """
+    ident = repr((AGGREGATE_VERSION, list(series_list), list(components),
+                  sorted(arches) if arches else None, sorted(pockets),
+                  bool(sources)))
+    return hashlib.sha256(ident.encode()).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------- snapshots
