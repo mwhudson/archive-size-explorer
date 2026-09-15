@@ -52,9 +52,9 @@ of the per-series ones — see below:
 ```console
 $ ./kernel-sizes-explorer report --snapshot 2026-09
 ...
-sum of series                              4.0 TiB /   10.5 TiB   38.1%
-whole archive (pool deduped)               4.0 TiB /    9.3 TiB   43.0%
-...files shared between series             1.2 TiB  (12.6% of the archive, ...)
+sum of series                              4.1 TiB /   10.9 TiB   38.0%
+whole archive (pool deduped)               4.1 TiB /    9.6 TiB   42.6%
+...files shared between series             1.2 TiB  (12.7% of the archive, ...)
 ```
 
 `--offline` re-aggregates whatever is already cached without touching the
@@ -70,7 +70,7 @@ $ ./kernel-sizes-explorer build --from-json data.json -o kernels.html   # instan
 `cache` says how much disk the cache is using; deleting the directory is safe.
 
 For scale: the full default run is 43 monthly snapshots across 12 series, which
-was 12.2 GB of downloads, 889 MB of cache, and a 6.9 MB page.
+was 12.2 GB of downloads, 866 MiB of cache, and an 8.3 MiB page.
 
 ## What counts as a kernel
 
@@ -160,14 +160,15 @@ exception, since that genuinely *is* one file listed in every directory.
 `kernel_sizes.py` does the work; `kernel-sizes-explorer` is the CLI;
 `template.html` is the page, with the dataset spliced into it as JSON.
 
-The unit of caching is one index blob, keyed by the SHA256 the suite's `Release`
-records for it. That makes the cache dedupe for free — a series' release pocket
-never changes after release, so however many snapshots reference it, it is
-fetched and parsed exactly once. Each blob is stored "slim": one TSV line per
-package with just the fields the aggregation needs, which is around 20x smaller
-than the `.xz` it came from and, more usefully, can be re-aggregated under
-different filters without going back to the network. A full snapshot of one
-series costs about 11 MiB of cache.
+The unit of caching is one index blob, keyed by the checksum the suite's
+`Release` records for it — SHA256, or SHA512 for the newer suites whose
+`Release` has dropped the SHA256 section. That makes the cache dedupe
+for free — a series' release pocket never changes after release, so however many
+snapshots reference it, it is fetched and parsed exactly once. Each blob is
+stored "slim": one TSV line per package with just the fields the aggregation
+needs, which is around 13x smaller than the `.xz` it came from and, more
+usefully, can be re-aggregated under different filters without going back to
+the network. A full snapshot of one series costs about 11 MiB of cache.
 
 The dataset the page gets is keyed by
 `(snapshot, series, architecture, component, pocket-set, kind)`, where the
