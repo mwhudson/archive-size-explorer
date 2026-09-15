@@ -13,6 +13,13 @@ it to someone, stick it on people.canonical.com. Series, architecture, pocket
 and component are all filters in the page, so you explore by clicking rather
 than by re-running the script.
 
+The page opens with the series that are still changing size ticked, and the
+fossils — EOL suites the snapshot service keeps serving forever, frozen at
+whatever they held on their last day — left alone. **select default** on the
+series row puts that selection back once you have clicked around, and **Reset**
+in the header puts every filter and control back to how the page opened, without
+moving you off the tab you are on.
+
 There are three things it will tell you: how much of the archive is kernels,
 how big the archive is, and how big the package lists are. The **Whole archive**
 tab tracks the total over time (and the kernel share of it); **Package lists**
@@ -228,6 +235,35 @@ Metadata is also not where the archive's disk goes, and is falling as a share of
 it: 1.6 GiB of compressed lists against 9.6 TiB of packages. Mirrors carry a
 `.gz` of every list as well as the `.xz`, so a mirror holds rather more than that
 figure — but not enough to change the conclusion.
+
+Two of the charts split by pocket and by component, which no other tab does and
+none of them could: `byClass` carries a pocket *bitmask*, so a line per pocket
+drawn off it would count a file promoted from `-updates` to `-security` twice.
+An index file belongs to exactly one suite and one component, so here all four
+dimensions split cleanly.
+
+That split is where the 6.1% comes from. At 2026-09:
+
+| pocket | entries | kernel | share |
+| --- | ---: | ---: | ---: |
+| release | 5,966,251 | 5,190 | 0.1% |
+| security | 593,164 | 203,245 | 34.3% |
+| updates | 709,183 | 211,257 | 29.8% |
+| proposed | 152,415 | 36,975 | 24.3% |
+| backports | 9,434 | 0 | 0.0% |
+
+The release pocket is 80% of the length of the lists and 0.1% of the kernels in
+them. It is frozen on release day, so it carries one ABI per flavour alongside
+the whole rest of the archive, while every ABI published since lands in
+`-updates` and `-security`. Untick `release` and the kernel share of the lists
+goes from 6.1% to **30.8%** — where it has sat, between 30% and 35%, ever since
+2023-03, while the byte share was climbing from 29.5% to 42.6%. The ABIs piling
+up are getting bigger, not more numerous.
+
+The component split says the same from the other side: `universe` is 79% of the
+entries and 0.4% kernel, `restricted` — where `linux-restricted-modules` and its
+`linux-objects-*` live — is 34.7%, and `main` with the release pocket dropped is
+48.9%.
 
 ## Caveats
 
