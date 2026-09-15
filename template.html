@@ -194,6 +194,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   <button class="tab" role="tab" data-view="breakdown" aria-selected="false">Breakdown</button>
   <button class="tab" role="tab" data-view="table" aria-selected="false">Table</button>
   <button class="tab" role="tab" data-view="archive" aria-selected="false">Whole archive</button>
+  <button class="tab" role="tab" data-view="lists" aria-selected="false">Package lists</button>
 </div>
 
 <div id="views"></div>
@@ -313,6 +314,12 @@ function bytes(n) {
   return (n >= 100 || u === 0 ? n.toFixed(0) : n.toFixed(1)) + " " + units[u];
 }
 function pct(n) { return (n * 100).toFixed(1) + "%"; }
+// Some of these are genuinely tiny -- the package lists are 0.016% of the
+// archive they describe, which pct() would round away to 0.0%.
+function pctFine(n) {
+  const v = n * 100;
+  return (v >= 1 ? v.toFixed(1) : v >= 0.1 ? v.toFixed(2) : v.toFixed(3)) + "%";
+}
 function count(n) { return n.toLocaleString(); }
 function stamp(s) { return s.slice(0, 4) + "-" + s.slice(4, 6) + "-" + s.slice(6, 8); }
 function snapDate(s) { return new Date(stamp(s) + "T00:00:00Z"); }
@@ -361,6 +368,49 @@ function scanFlavour(fn) {
     if (!state.arch.has(rows[i + 2])) continue;
     fn(rows[i], rows[i + 1], rows[i + 2], rows[i + 4], rows[i + 5], rows[i + vi]);
   }
+}
+
+// byIndex is one row per index file: snapshot, series, arch, component,
+// pocket, entries, kernel entries, compressed bytes, uncompressed bytes.
+// Alone among the tables here it is not deduplicated, because what it measures
+// is the lists rather than the pool they point at: the archive really does
+// publish a separate Packages for every series, pocket, component and
+// architecture, and an Architecture: all package really is a stanza in each of
+// them.  Pocket is a plain index rather than a mask for the same reason -- an
+// index file belongs to exactly one suite.
+function scanIndex(fn) {
+  const rows = DATA.byIndex.rows;
+  for (let i = 0; i < rows.length; i += 9) {
+    if (!state.series.has(rows[i + 1])) continue;
+    if (!state.arch.has(rows[i + 2])) continue;
+    if (!state.comp.has(rows[i + 3])) continue;
+    if (!state.pocket.has(rows[i + 4])) continue;
+    fn(rows[i], rows[i + 1], rows[i + 2], rows[i + 5], rows[i + 6],
+       rows[i + 7], rows[i + 8]);
+  }
+}
+
+/** timeline(), but over index files; same shape, so splitLines() fits it. */
+function indexTimeline() {
+  const sp = split();
+  const perKey = new Map();
+  const blank = () => ({ files: 0, n: 0, kn: 0, csize: 0, usize: 0 });
+  const totals = D.snapshots.map(blank);
+
+  function add(key, snap, n, kn, c, u) {
+    let per = perKey.get(key);
+    if (!per) { per = D.snapshots.map(() => null); perKey.set(key, per); }
+    let cell = per[snap];
+    if (!cell) cell = per[snap] = blank();
+    cell.files++; cell.n += n; cell.kn += kn; cell.csize += c; cell.usize += u;
+  }
+
+  scanIndex((snap, ser, arch, n, kn, c, u) => {
+    const t = totals[snap];
+    t.files++; t.n += n; t.kn += kn; t.csize += c; t.usize += u;
+    add(sp.key === "arch" ? arch : ser, snap, n, kn, c, u);
+  });
+  return { perKey, totals, split: sp };
 }
 
 /** kernel/total bytes at one snapshot, deduplicated across the selection. */
@@ -1043,6 +1093,164 @@ function viewArchive(host) {
   });
 }
 
+/* ------------------------------------------------------------ the lists */
+
+function viewLists(host) {
+  const il = indexTimeline();
+  const live = il.totals.map((c, i) => (c.files ? i : -1)).filter(i => i >= 0);
+  if (!live.length) {
+    host.innerHTML = '<div class="card"><div class="empty">' +
+      "No index files in this selection. Note that 'all' is not an index " +
+      "directory of its own: an Architecture: all package is listed once in " +
+      "every binary-&lt;arch&gt; index, so ticking only 'all' leaves nothing " +
+      "to measure.</div></div>";
+    return;
+  }
+  const tl = timeline();
+  const xs = D.snapshots.map(shortStamp);
+  const firstIdx = live[0], lastIdx = live[live.length - 1];
+  const first = il.totals[firstIdx], last = il.totals[lastIdx];
+
+  const sizeCard = card(host, "Size of the package lists",
+    "The indexes themselves rather than the packages they point at: what apt " +
+    "fetches on 'apt update'. Compressed is the .xz the archive publishes, " +
+    "which is the copy this tool downloads; mirrors serve a .gz of every list " +
+    "as well, so a mirror carries rather more than this.");
+  lineChart(sizeCard, {
+    x: xs,
+    xTitle: i => stamp(D.snapshots[i]),
+    fmt: bytes,
+    series: [
+      { name: "uncompressed", colour: "var(--s2)",
+        points: il.totals.map(c => (c.files ? c.usize : null)) },
+      { name: "compressed", colour: "var(--s1)",
+        points: il.totals.map(c => (c.files ? c.csize : null)) },
+    ],
+  });
+  legend(sizeCard, [["uncompressed", "var(--s2)"],
+                    ["compressed (.xz)", "var(--s1)"]]);
+  const archiveNow = tl.totals[lastIdx] ? tl.totals[lastIdx].total : 0;
+  note(sizeCard,
+    count(last.files) + " index files at " + stamp(D.snapshots[lastIdx]) +
+    " holding " + bytes(last.csize) + " compressed and " + bytes(last.usize) +
+    " raw, up from " + count(first.files) + " and " + bytes(first.csize) +
+    " at " + stamp(D.snapshots[firstIdx]) + "." +
+    (archiveNow
+      ? " The compressed lists are " + pctFine(last.csize / archiveNow) +
+        " of the " + bytes(archiveNow) + " of packages they describe."
+      : ""));
+
+  const splitCard = card(host, "Package lists, per " + il.split.label,
+    "Compressed size, one line per " + il.split.label + ". Nothing is shared " +
+    "between the lines: every index belongs to exactly one series and one " +
+    "architecture, so unlike the other tabs these do add up to the total.");
+  const sizeLines = splitLines(il, c => c.csize);
+  lineChart(splitCard, {
+    x: xs,
+    xTitle: i => stamp(D.snapshots[i]),
+    fmt: bytes,
+    series: sizeLines.series,
+  });
+  legend(splitCard, sizeLines.series.map(l => [l.name, l.colour]));
+  dropNote(splitCard, sizeLines);
+  const allArch = D.arches.indexOf("all");
+  if (il.split.key === "arch" && state.arch.has(allArch)) {
+    note(splitCard, "'all' has no line because it has no index directory: an " +
+         "Architecture: all package is listed under every real architecture, " +
+         "and is counted there.");
+  }
+
+  const entCard = card(host, "Entries in the package lists",
+    "One entry per stanza, counted as the indexes list them rather than as " +
+    "the pool stores them: a package published to both -updates and -security " +
+    "is two entries, and an Architecture: all package is one entry under every " +
+    "architecture. That is what makes a list long to parse, and it is not how " +
+    "the other tabs count packages.");
+  lineChart(entCard, {
+    x: xs,
+    xTitle: i => stamp(D.snapshots[i]),
+    fmt: count,
+    series: [
+      { name: "all entries", colour: "var(--s2)",
+        points: il.totals.map(c => (c.files ? c.n : null)) },
+      { name: "kernel entries", colour: "var(--s1)",
+        points: il.totals.map(c => (c.files ? c.kn : null)) },
+    ],
+  });
+  legend(entCard, [["all entries", "var(--s2)"], ["kernel entries", "var(--s1)"]]);
+
+  const shareCard = card(host, "How much of the lists is kernels",
+    "Kernel entries as a share of all entries, against the kernel share of " +
+    "the archive's bytes for comparison. Kernel packages are few and enormous, " +
+    "so the two answers to 'how much of this is kernels' are nothing alike.");
+  lineChart(shareCard, {
+    x: xs,
+    xTitle: i => stamp(D.snapshots[i]),
+    fmt: v => v.toFixed(0) + "%",
+    minMax: 10,
+    height: 260,
+    series: [
+      { name: "of archive bytes", colour: "var(--s2)",
+        points: tl.totals.map(c => (c && c.total ? 100 * c.kernel / c.total : null)) },
+      { name: "of list entries", colour: "var(--s1)",
+        points: il.totals.map(c => (c.n ? 100 * c.kn / c.n : null)) },
+    ],
+  });
+  legend(shareCard, [["of archive bytes", "var(--s2)"],
+                     ["of list entries", "var(--s1)"]]);
+
+  snapshotChooser(host, body => {
+    const byArch = new Map();
+    scanIndex((snap, ser, arch, n, kn, c, u) => {
+      if (snap !== state.snap) return;
+      let a = byArch.get(arch);
+      if (!a) byArch.set(arch, a = { n: 0, kn: 0, csize: 0, files: 0 });
+      a.n += n; a.kn += kn; a.csize += c; a.files++;
+    });
+    const ac = card(body, "The lists by architecture",
+      "At " + stamp(D.snapshots[state.snap]) + ". Solid bar: kernel entries. " +
+      "'source' is the Sources indexes; there is no 'all' row because " +
+      "Architecture: all packages are listed under each real architecture.");
+    barChart(ac, {
+      labelWidth: 92,
+      items: [...byArch.entries()].sort((a, b) => b[1].n - a[1].n)
+        .map(entry => ({
+          label: D.arches[entry[0]], value: entry[1].kn,
+          total: entry[1].n, csize: entry[1].csize, files: entry[1].files,
+        })),
+      rowLabel: d => pct(d.total ? d.value / d.total : 0) + " of " +
+        count(d.total) + " entries",
+      tip: d => '<div class="tt-title">' + d.label + "</div>" +
+        '<div class="tt-row"><span>index files</span><span>' + count(d.files) + "</span></div>" +
+        '<div class="tt-row"><span>entries</span><span>' + count(d.total) + "</span></div>" +
+        '<div class="tt-row"><span>kernel entries</span><span>' + count(d.value) + "</span></div>" +
+        '<div class="tt-row"><span>compressed</span><span>' + bytes(d.csize) + "</span></div>",
+    });
+    legend(ac, [["kernel entries", "var(--s1)"],
+                ["every entry", "var(--neutral-fill)"]]);
+
+    const t = card(body, "The numbers", "");
+    const wrap = document.createElement("div");
+    wrap.className = "tablewrap";
+    let html = "<table><thead><tr><th>Snapshot</th><th>Indexes</th>" +
+      "<th>Entries</th><th>Kernel</th><th>Share</th><th>Compressed</th>" +
+      "<th>Uncompressed</th><th>Of archive</th></tr></thead><tbody>";
+    il.totals.forEach((c, i) => {
+      if (!c.files) return;
+      const arch = tl.totals[i] ? tl.totals[i].total : 0;
+      html += "<tr><td>" + stamp(D.snapshots[i]) + '</td><td class="num">' +
+        count(c.files) + '</td><td class="num">' + count(c.n) +
+        '</td><td class="num">' + count(c.kn) + '</td><td class="num">' +
+        pct(c.n ? c.kn / c.n : 0) + '</td><td class="num">' + bytes(c.csize) +
+        '</td><td class="num">' + bytes(c.usize) + '</td><td class="num">' +
+        (arch ? pctFine(c.csize / arch) : "-") + "</td></tr>";
+    });
+    html += "</tbody></table>";
+    wrap.innerHTML = html;
+    t.appendChild(wrap);
+  });
+}
+
 /* ------------------------------------------------------------ card helpers */
 
 function card(host, title, sub) {
@@ -1110,6 +1318,9 @@ function updateTiles() {
 }
 
 function render() {
+  // The tab is removed at load for a dataset that predates the index table,
+  // but do not make the dispatch depend on that having happened.
+  if (state.view === "lists" && !DATA.byIndex) state.view = "time";
   assignSlots();
   buildFilters();
   updateTiles();
@@ -1124,10 +1335,18 @@ function render() {
       "Select at least one of each filter.</div></div>";
     return;
   }
-  if (state.view === "archive") viewArchive(host);
+  if (state.view === "lists") viewLists(host);
+  else if (state.view === "archive") viewArchive(host);
   else if (state.view === "breakdown") viewBreakdown(host);
   else if (state.view === "time") viewTime(host, timeline());
   else viewTable(host, timeline());
+}
+
+// --from-json can replay a dataset built before the index table existed.
+if (!DATA.byIndex) {
+  const stale = document.querySelector('.tab[data-view="lists"]');
+  if (stale) stale.remove();
+  if (state.view === "lists") state.view = "time";
 }
 
 document.querySelectorAll(".tab").forEach(t =>
@@ -1154,7 +1373,11 @@ document.getElementById("footer").innerHTML =
   "Series share one pool/ too, so every total here counts a shared file once " +
   "for the set you have ticked. The one place that does not hold is a " +
   "per-series line or row: a file jammy and noble both reference belongs to " +
-  "each of their sizes, so those add up to more than the archive holds.";
+  "each of their sizes, so those add up to more than the archive holds.<br>" +
+  "Package lists is the exception to all of that. It measures the indexes " +
+  "rather than the pool, so it counts stanzas as the archive publishes them: " +
+  "once per pocket, and once per architecture for an Architecture: all " +
+  "package. Sizes there come from the Release files, not from the packages.";
 
 let resizeTimer = null;
 window.addEventListener("resize", () => {

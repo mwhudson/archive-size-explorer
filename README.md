@@ -13,11 +13,12 @@ it to someone, stick it on people.canonical.com. Series, architecture, pocket
 and component are all filters in the page, so you explore by clicking rather
 than by re-running the script.
 
-There are two things it will tell you: how much of the archive is kernels, and
-how big the archive is. The **Whole archive** tab tracks the total over time
-(and the kernel share of it); the other tabs break it down. A "one line per"
-control switches the charts between a line per series and a line per
-architecture.
+There are three things it will tell you: how much of the archive is kernels,
+how big the archive is, and how big the package lists are. The **Whole archive**
+tab tracks the total over time (and the kernel share of it); **Package lists**
+does the same for `dists/` rather than `pool/`; the other tabs break the archive
+down. A "one line per" control switches the charts between a line per series and
+a line per architecture.
 
 ## Using it
 
@@ -119,7 +120,7 @@ $ ./kernel-sizes-explorer build --from-json data.json -o kernels.html   # instan
 `cache` says how much disk the cache is using; deleting the directory is safe.
 
 For scale: the full default run is 43 monthly snapshots across 12 series, which
-was 12.2 GB of downloads, 866 MiB of cache, and an 8.3 MiB page.
+was 12.5 GB of downloads, 869 MB of cache, and a 9.9 MB page.
 
 ## What counts as a kernel
 
@@ -185,6 +186,49 @@ stonking at 2026-09 that is 103 GiB, an entire port, invisible. So a row is
 filed under the directory it came from, with `Architecture: all` as the one
 exception, since that genuinely *is* one file listed in every directory.
 
+## The package lists
+
+Everything above measures `pool/` — the packages. The **Package lists** tab
+measures `dists/`: the `Packages` and `Sources` indexes themselves, which is
+what `apt update` downloads before it can install anything.
+
+That comes almost free. A suite's `Release` file records the size of every index
+alongside its checksum, so the whole history costs one small fetch per suite per
+snapshot and not a single extra index download. Across the default window that
+is 1880 `Release` files, about two minutes and 300 MB.
+
+It is the one tab that deduplicates **nothing**, and that is the point. The
+archive really does publish a separate `Packages` for every combination of
+series, pocket, component and architecture, and an `Architecture: all` package
+really is a stanza in every one of them. That is what makes a list long, so that
+is how they are counted here — which means the numbers are deliberately not
+comparable with the other tabs, where the same package is one file in `pool/`.
+For the same reason `all` has no row: it is not an index directory.
+
+The interesting part is that "how much of this is kernels" has two completely
+different answers depending on what you are paying for:
+
+| whole archive | 2023-03 | 2026-09 |
+| --- | --- | --- |
+| index files | 780 | 1960 |
+| entries in them | 2.70M | 7.43M |
+| lists, compressed (`.xz`) | 586 MiB | 1.6 GiB |
+| lists, uncompressed | 2.8 GiB | 8.0 GiB |
+| lists as a share of the archive | 0.022% | 0.016% |
+| **kernel share of the entries** | **5.7%** | **6.1%** |
+| **kernel share of the bytes** | **29.5%** | **42.6%** |
+
+Kernel packages are few and enormous. They have gone from under a third of the
+archive to well over two fifths by size while barely moving as a fraction of the
+lists, so nothing about kernel growth is making `apt update` slower. The lists
+have grown 2.8x since 2023-03 for the ordinary reason: more series alive at once,
+each with more packages in it.
+
+Metadata is also not where the archive's disk goes, and is falling as a share of
+it: 1.6 GiB of compressed lists against 9.6 TiB of packages. Mirrors carry a
+`.gz` of every list as well as the `.xz`, so a mirror holds rather more than that
+figure — but not enough to change the conclusion.
+
 ## Caveats
 
 * It counts what the indexes **publish** at a given moment, which is not quite
@@ -196,6 +240,11 @@ exception, since that genuinely *is* one file listed in every directory.
   affects a handful of packages.
 * `Installed-Size` is in KiB in the index; the "installed size" measure
   multiplies it by 1024, so both measures are in bytes.
+* The "compressed" size on the Package lists tab is the single variant this tool
+  fetches, which is the `.xz` for every index in the window — the archive
+  publishes a `.gz` of each as well, and `Release` lists an uncompressed variant
+  that is not published at all. So it is what one `apt update` pulls, not what a
+  mirror stores.
 * Every kernel source in the archive today is named `linux*`, and so is every
   binary they build — but nothing here relies on that. Classification is driven
   entirely by `Provides: linux-image`, so a kernel source under some other name
@@ -208,6 +257,14 @@ exception, since that genuinely *is* one file listed in every directory.
 
 `kernel_sizes.py` does the work; `kernel-sizes-explorer` is the CLI;
 `template.html` is the page, with the dataset spliced into it as JSON.
+
+The `Release` files are cached too, as `path -> (checksum, size)`. The size
+column is what the Package lists tab runs on, and it is the only record of it:
+a cached blob has been stripped down to the fields the aggregation needs and no
+longer knows how big the index it came from was. A cache written before that
+column existed reads back as missing rather than as two columns, so the
+`Release` files are simply fetched again; the index blobs, which are the
+expensive part, are untouched.
 
 The unit of caching is one index blob, keyed by the checksum the suite's
 `Release` records for it — SHA256, or SHA512 for the newer suites whose

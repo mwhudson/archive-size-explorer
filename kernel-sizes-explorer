@@ -27,8 +27,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from kernel_sizes import (  # noqa: E402
     Builder, Cache, Fetcher, CANDIDATE_SERIES, DEFAULT_COMPONENTS, OTHER,
-    POCKETS, aggregate, default_cache_dir, kernel_predicate, log, merge_rows,
-    snapshots,
+    POCKETS, aggregate, count_index, default_cache_dir, kernel_predicate, log,
+    merge_rows, snapshots,
 )
 
 
@@ -100,6 +100,33 @@ class SkipOffline(Exception):
     pass
 
 
+def tally_indexes(cache, plans, is_kernel, snap, into):
+    """Size and entry count of every index behind one snapshot.
+
+    Deliberately not deduplicated: the archive really does publish one
+    binary-<arch>/Packages per component per pocket per series, and an
+    Architecture: all package really is a stanza in each of them.  That is what
+    makes this table different in kind from the others -- it measures the lists
+    rather than the pool they point at.
+
+    A second pass over the blobs, because kernel-ness is a property of the
+    whole snapshot and is not known until every index has been read.  Nothing
+    is downloaded here; load_rows has already put it all in the cache.
+    """
+    counted = {}
+    for series, plan in plans:
+        for ix in plan:
+            tally = counted.get(ix.sha)
+            if tally is None:
+                tally = counted[ix.sha] = count_index(cache, ix.sha, is_kernel)
+            acc = into.setdefault(
+                (snap, series, ix.pocket, ix.component, ix.arch), [0, 0, 0, 0])
+            acc[0] += tally[0]
+            acc[1] += tally[1]
+            acc[2] += ix.csize
+            acc[3] += ix.usize
+
+
 def collect(builder, snaps, series_list, progress=True):
     """Aggregate each snapshot, with every series folded into one map.
 
@@ -110,10 +137,12 @@ def collect(builder, snaps, series_list, progress=True):
     """
     byclass = {}
     byflavour = {}
+    byindex = {}
     seen = []
     started = time.time()
     for i, snap in enumerate(snaps, 1):
         whole = {}
+        plans = []
         for series in series_list:
             try:
                 rows = builder.load_rows(snap, series)
@@ -123,24 +152,27 @@ def collect(builder, snaps, series_list, progress=True):
                 continue
             if series not in seen:
                 seen.append(series)
+            plans.append((series, builder.plan(snap, series)))
             merge_rows(whole, rows, 1 << series_list.index(series))
             del rows
         if whole:
-            cls_table, flav_table = aggregate(whole)
+            is_kernel = kernel_predicate(whole)
+            cls_table, flav_table = aggregate(whole, is_kernel)
             for key, acc in cls_table.items():
                 byclass[(snap,) + key] = acc
             for key, acc in flav_table.items():
                 byflavour[(snap,) + key] = acc
+            tally_indexes(builder.cache, plans, is_kernel, snap, byindex)
             del whole
         if progress:
             log("[%d/%d] %s  %d blobs fetched (%.1f MiB), %d cached, %.0fs"
                 % (i, len(snaps), snap, builder.downloads,
                    builder.fetcher.bytes_downloaded / 2 ** 20,
                    builder.hits, time.time() - started))
-    return byclass, byflavour, sorted(seen)
+    return byclass, byflavour, byindex, sorted(seen)
 
 
-def encode(byclass, byflavour, snaps, series_list):
+def encode(byclass, byflavour, byindex, snaps, series_list):
     """Pack the tables into dimension dictionaries plus flat integer rows.
 
     The series dimension is a bitmask over series_list, not an index, so the
@@ -152,15 +184,22 @@ def encode(byclass, byflavour, snaps, series_list):
 
     used_snaps = sorted({k[0] for k in byclass})
     snap_i = {v: i for i, v in enumerate(used_snaps)}
-    arches, arch_i = index({k[2] for k in byclass} | {k[2] for k in byflavour})
-    comps, comp_i = index({k[3] for k in byclass})
+    # An index can exist and be empty -- a -proposed pocket nobody has uploaded
+    # to yet -- so its architecture and component have to be taken from the
+    # index table too, or its row would have nowhere to go.
+    arches, arch_i = index({k[2] for k in byclass} | {k[2] for k in byflavour}
+                           | {k[4] for k in byindex})
+    comps, comp_i = index({k[3] for k in byclass} | {k[3] for k in byindex})
     classes, class_i = index({k[5] for k in byclass})
     flavours, flav_i = index({k[4] for k in byflavour})
+    pocket_i = {p: i for i, p in enumerate(POCKETS)}
 
     # keep only the series that turned up, and renumber the masks to match
     used_bits = 0
     for k in byclass:
         used_bits |= k[1]
+    for k in byindex:
+        used_bits |= 1 << series_list.index(k[1])
     kept = [s for i, s in enumerate(series_list) if used_bits >> i & 1]
     remap = {}
     for new_i, name in enumerate(kept):
@@ -181,6 +220,14 @@ def encode(byclass, byflavour, snaps, series_list):
     for (snap, smask, arch, mask, flav), acc in sorted(byflavour.items()):
         flav_rows += [snap_i[snap], shrink(smask), arch_i[arch], mask,
                       flav_i[flav], acc[0], acc[1], acc[2]]
+    # One row per index file, so the pocket is a plain number here rather than
+    # the bitmask the other tables carry: a Packages file belongs to exactly
+    # one suite, and there is nothing to deduplicate.
+    idx_rows = []
+    for (snap, series, pocket, comp, arch), acc in sorted(byindex.items()):
+        idx_rows += [snap_i[snap], remap[series_list.index(series)],
+                     arch_i[arch], comp_i[comp], pocket_i[pocket],
+                     acc[0], acc[1], acc[2], acc[3]]
 
     return {
         "generated": datetime.datetime.now(
@@ -197,6 +244,7 @@ def encode(byclass, byflavour, snaps, series_list):
         },
         "byClass": {"stride": 9, "rows": cls_rows},
         "byFlavour": {"stride": 8, "rows": flav_rows},
+        "byIndex": {"stride": 9, "rows": idx_rows},
     }
 
 
@@ -222,15 +270,16 @@ def cmd_build(args):
     log("%d snapshot(s) x %d candidate series; cache at %s"
         % (len(snaps), len(series_list), args.cache))
 
-    byclass, byflavour, seen = collect(builder, snaps, series_list)
+    byclass, byflavour, byindex, seen = collect(builder, snaps, series_list)
     if not byclass:
         log("nothing collected -- wrong window, or an --offline run with a "
             "cold cache")
         return 1
-    data = encode(byclass, byflavour, snaps, series_list)
-    log("collected %d class rows, %d flavour rows across %s"
+    data = encode(byclass, byflavour, byindex, snaps, series_list)
+    log("collected %d class rows, %d flavour rows, %d index rows across %s"
         % (len(data["byClass"]["rows"]) // 9,
-           len(data["byFlavour"]["rows"]) // 8, ", ".join(seen)))
+           len(data["byFlavour"]["rows"]) // 8,
+           len(data["byIndex"]["rows"]) // 9, ", ".join(seen)))
 
     payload = json.dumps(data, separators=(",", ":"))
     if args.json:
@@ -254,7 +303,8 @@ def cmd_report(args):
     snaps = snapshots(args.snapshot, args.snapshot, "month") \
         if args.snapshot else snapshots(None, None, "month")[-1:]
     series_list = args.series or CANDIDATE_SERIES
-    byclass, _flav, seen = collect(builder, snaps, series_list, progress=False)
+    byclass, _flav, _idx, seen = collect(builder, snaps, series_list,
+                                         progress=False)
 
     # A row's series mask says which series reference that file.  Adding a row
     # into every series it touches gives each series its own honest total; the
@@ -358,7 +408,7 @@ def collect_sources(builder, snaps, series_list, match=None, family=False,
             overall = archive.setdefault(snap, [0, 0])
             for (pkg, _ver, _arch), row in whole.items():
                 name = pkg.decode()
-                kernel = is_kernel_row(name, row)
+                kernel = is_kernel_row(name, row.src)
                 overall[0] += row.size
                 if kernel:
                     overall[1] += row.size

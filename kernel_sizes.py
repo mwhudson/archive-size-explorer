@@ -9,6 +9,10 @@ Each cached blob is stored "slim": one line per package with just the fields
 the aggregation needs.  That is roughly 20x smaller than the .xz we downloaded
 and, more usefully, can be re-aggregated under different rules without going
 back to the network.
+
+The Release files themselves are cached too, as path -> (checksum, size).  The
+size is the only record of how big the indexes are: a slim blob has lost it,
+and nothing else on the page can answer "how much of this is metadata".
 """
 
 import bz2
@@ -20,7 +24,7 @@ import re
 import sys
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -90,9 +94,13 @@ class Cache:
         return self._path("release", snapshot, suite + ".tsv.gz")
 
     def get_release(self, snapshot, suite):
-        """Return {path: sha256} for a suite, or None if not cached.
+        """Return {path: (checksum, size)} for a suite, or None if not cached.
 
-        An empty dict means "we asked and the suite does not exist here".
+        An empty dict means "we asked and the suite does not exist here".  A
+        two-column file is a cache written before sizes were recorded; it reads
+        back as None so the Release is fetched again, which is the only way to
+        fill the column in.  Release files are small and there is one per suite
+        per snapshot, so that upgrade costs minutes, not hours.
         """
         path = self.release_path(snapshot, suite)
         if not os.path.exists(path):
@@ -101,8 +109,9 @@ class Cache:
         with gzip.open(path, "rt") as f:
             for line in f:
                 fields = line.rstrip("\n").split("\t")
-                if len(fields) == 2:
-                    out[fields[0]] = fields[1]
+                if len(fields) != 3:
+                    return None
+                out[fields[0]] = (fields[1], int(fields[2]))
         return out
 
     def put_release(self, snapshot, suite, entries):
@@ -111,7 +120,7 @@ class Cache:
         tmp = "%s.%d.tmp" % (path, os.getpid())
         with gzip.open(tmp, "wt") as f:
             for k in sorted(entries):
-                f.write("%s\t%s\n" % (k, entries[k]))
+                f.write("%s\t%s\t%d\n" % (k, entries[k][0], entries[k][1]))
         os.replace(tmp, path)
 
     def usage(self):
@@ -193,8 +202,9 @@ RELEASE_DIGESTS = ["sha256", "sha512"]
 def parse_release(text):
     """Pull the checksum section and Architectures/Components out of a Release.
 
-    Returns (entries, arches, components, algorithm), where algorithm names the
-    hashlib digest the entries are keyed by.
+    Returns (entries, arches, components, algorithm), where entries maps a
+    Release-relative path to (checksum, size) and algorithm names the hashlib
+    digest the checksums are.
     """
     sections = {}
     arches = []
@@ -205,7 +215,8 @@ def parse_release(text):
             if current is not None:
                 fields = line.split()
                 if len(fields) == 3:
-                    sections[current][fields[2].decode()] = fields[0].decode()
+                    sections[current][fields[2].decode()] = (
+                        fields[0].decode(), int(fields[1]))
             continue
         current = None
         head = line.split(b":", 1)[0].lower().decode(errors="replace")
@@ -220,6 +231,16 @@ def parse_release(text):
         if sections.get(algo):
             return sections[algo], arches, components, algo
     return {}, arches, components, RELEASE_DIGESTS[0]
+
+
+def release_meta(entries, key, default=""):
+    """Read one of the "_"-prefixed rows a cached release map carries.
+
+    Those rows hold Architectures, Components and the digest algorithm rather
+    than a checksum, so they share the shape of a real entry and ignore the
+    size half of it.
+    """
+    return entries.get(key, (default, 0))[0]
 
 
 def slim_packages(raw):
@@ -440,23 +461,52 @@ def kernel_predicate(rows):
             r"^linux-objects-.+-(%s)$"
             % "|".join(re.escape(v) for v in sorted(kvers)))
 
-    def is_kernel(name, row):
-        return row.src in kernel_sources or (
+    def is_kernel(name, src):
+        return src in kernel_sources or (
             objects_re is not None and objects_re.match(name) is not None)
 
     return is_kernel
 
 
-def aggregate(rows):
-    """Turn one snapshot's worth of rows into the two output tables."""
-    is_kernel_row = kernel_predicate(rows)
+def count_index(cache, sha, is_kernel):
+    """(entries, kernel entries) in one cached index.
+
+    Counts stanzas the way the index lists them, not the way the pool stores
+    them: an Architecture: all package is a line in every binary-<arch> index
+    that carries it, and a package in two pockets is a line in each.  That is
+    the right unit for "how long is this list" and the wrong one for "how big
+    is the archive", which is what everything else here counts.
+    """
+    data = cache.get_blob(sha)
+    if not data:
+        return 0, 0
+    n = kn = 0
+    for line in data.split(b"\n"):
+        if not line:
+            continue
+        n += 1
+        fields = line.split(b"\t")
+        if is_kernel(fields[0].decode(), fields[5].decode()):
+            kn += 1
+    return n, kn
+
+
+def aggregate(rows, is_kernel_row=None):
+    """Turn one snapshot's worth of rows into the two output tables.
+
+    Takes the kernel test as an argument when the caller already has one:
+    building it walks every row in the snapshot, and there is no point doing
+    that twice.
+    """
+    if is_kernel_row is None:
+        is_kernel_row = kernel_predicate(rows)
 
     by_class = defaultdict(lambda: [0, 0, 0])    # smask, arch, comp, mask, class
     by_flavour = defaultdict(lambda: [0, 0, 0])  # smask, arch, mask, flavour
 
     for (pkg, _ver, _arch), row in rows.items():
         name = pkg.decode()
-        is_kernel = is_kernel_row(name, row)
+        is_kernel = is_kernel_row(name, row.src)
         if not is_kernel:
             cls = OTHER
         elif row.arch == "source":
@@ -538,6 +588,14 @@ def index_paths(components, arches, want_sources):
             yield component, "source", "%s/source/Sources" % component
 
 
+# One index file, as planned from a suite's Release.  csize is the size of the
+# variant we actually fetch (.xz where it exists, else .gz), usize the size the
+# same list decompresses to.  Release records both, even though the archive
+# only publishes the compressed one.
+Index = namedtuple(
+    "Index", "component arch pocket path sha algo csize usize")
+
+
 class Builder:
     """Walks snapshots, keeps the cache full, and aggregates what it finds."""
 
@@ -579,9 +637,9 @@ class Builder:
             raise RuntimeError(
                 "no usable checksum section in %s (looked for %s)"
                 % (url, ", ".join(RELEASE_DIGESTS)))
-        entries["_arches"] = " ".join(arches)
-        entries["_components"] = " ".join(components)
-        entries["_algo"] = algo
+        entries["_arches"] = (" ".join(arches), 0)
+        entries["_components"] = (" ".join(components), 0)
+        entries["_algo"] = (algo, 0)
         self.cache.put_release(snapshot, suite, entries)
         return entries
 
@@ -616,17 +674,19 @@ class Builder:
             if not entries:
                 continue
             found = True
-            algo = entries.get("_algo", "sha256")
-            arches = self.arches or entries.get("_arches", "").split()
+            algo = release_meta(entries, "_algo", "sha256")
+            arches = self.arches or release_meta(entries, "_arches").split()
             components = [c for c in self.components
-                          if c in entries.get("_components", "").split()]
+                          if c in release_meta(entries, "_components").split()]
             for component, arch, path in index_paths(components, arches,
                                                      self.sources):
+                plain = entries.get(path)
                 for suffix in (".xz", ".gz", ""):
-                    sha = entries.get(path + suffix)
-                    if sha:
-                        wanted.append((component, arch, pocket, path + suffix,
-                                       sha, algo))
+                    entry = entries.get(path + suffix)
+                    if entry:
+                        wanted.append(Index(
+                            component, arch, pocket, path + suffix, entry[0],
+                            algo, entry[1], plain[1] if plain else 0))
                         break
         return wanted if found else None
 
@@ -638,12 +698,13 @@ class Builder:
         wanted = self.plan(snapshot, series)
         if wanted is None:
             return None
-        missing = [w for w in wanted if not self.cache.have_blob(w[4])]
+        missing = [ix for ix in wanted if not self.cache.have_blob(ix.sha)]
         self.hits += len(wanted) - len(missing)
         if missing:
             suite_of = {}
-            for component, _arch, pocket, path, sha, algo in missing:
-                suite_of[sha] = (suite_name(series, pocket), path, algo)
+            for ix in missing:
+                suite_of[ix.sha] = (suite_name(series, ix.pocket), ix.path,
+                                    ix.algo)
             with ThreadPoolExecutor(max_workers=self.fetcher.jobs) as pool:
                 list(pool.map(
                     lambda item: self._ensure_blob(
@@ -654,10 +715,10 @@ class Builder:
         bit = {p: 1 << i for i, p in enumerate(POCKETS)}
         for component in self.components:
             for pocket in self.pockets:
-                for c, a, p, path, sha, _algo in wanted:
-                    if c == component and p == pocket:
-                        load_slim(self.cache, sha, component, a.encode(),
-                                  bit[pocket], rows)
+                for ix in wanted:
+                    if ix.component == component and ix.pocket == pocket:
+                        load_slim(self.cache, ix.sha, component,
+                                  ix.arch.encode(), bit[pocket], rows)
         return rows
 
 
