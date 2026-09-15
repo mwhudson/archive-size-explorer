@@ -166,6 +166,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   <h1>Kernels in the Ubuntu archive</h1>
   <div class="sub" id="generated"></div>
   <div class="spacer"></div>
+  <button class="plain" id="resetbtn" type="button">Reset</button>
   <button class="plain" id="themebtn" type="button">Theme</button>
 </header>
 
@@ -244,12 +245,20 @@ Slots.prototype.drawable = function (selected) {
 
 const seriesSlots = new Slots();
 const archSlots = new Slots();
+// Pocket and component are filters on every other tab.  On Package lists they
+// are also drawn as lines, because an index file belongs to exactly one of
+// each -- so they get slots of their own.  Both are well inside SLOTS, so
+// nothing is ever dropped for want of a colour.
+const pocketSlots = new Slots();
+const compSlots = new Slots();
 const seriesColour = k => seriesSlots.colour(k);
 const archColour = k => archSlots.colour(k);
 
 function assignSlots() {
   seriesSlots.assign(state.series);
   archSlots.assign(state.arch);
+  pocketSlots.assign(state.pocket);
+  compSlots.assign(state.comp);
 }
 
 /** Whichever dimension the charts are currently drawing one line per. */
@@ -263,23 +272,12 @@ function split() {
 
 /* ------------------------------------------------------------------ state */
 
-const state = {
-  series: new Set(),
-  arch: new Set(),
-  pocket: new Set(DATA.pockets.map((_, i) => i)),
-  comp: new Set(D.components.map((_, i) => i)),
-  metric: "size",
-  splitBy: "series",
-  view: "time",
-  snap: D.snapshots.length - 1,
-};
-
-// Default to the series that are still moving.  "Present at the most recent
-// snapshot" is no use as a test: the snapshot service keeps EOL suites served
-// forever, frozen at whatever they held on their last day, so kinetic is just
-// as present in 2026 as noble is.  A series that has not changed size since the
+// The series that are still moving.  "Present at the most recent snapshot" is
+// no use as a test: the snapshot service keeps EOL suites served forever,
+// frozen at whatever they held on their last day, so kinetic is just as
+// present in 2026 as noble is.  A series that has not changed size since the
 // snapshot before is one of those fossils, and is left unticked.
-(function initialSelection() {
+function activeSeries() {
   const last = D.snapshots.length - 1;
   const rows = DATA.byClass.rows;
   const now = new Array(D.series.length).fill(0);
@@ -299,11 +297,51 @@ const state = {
   const candidates = active.length
     ? active
     : now.map((v, i) => (v ? i : -1)).filter(i => i >= 0);
-  candidates.sort((a, b) => b - a).slice(0, SLOTS)
-            .forEach(ser => state.series.add(ser));
-  if (!state.series.size) D.series.forEach((_, i) => state.series.add(i));
-  D.arches.forEach((_, i) => state.arch.add(i));
-})();
+  const picked = new Set(candidates.sort((a, b) => b - a).slice(0, SLOTS));
+  return picked.size ? picked : new Set(D.series.map((_, i) => i));
+}
+
+// What the page opens with, and what Reset puts back.  Kept as its own object
+// rather than only as the starting state, so "select default" on the series
+// row has something to point at after you have clicked around.
+const DEFAULTS = {
+  series: activeSeries(),
+  arch: new Set(D.arches.map((_, i) => i)),
+  pocket: new Set(DATA.pockets.map((_, i) => i)),
+  comp: new Set(D.components.map((_, i) => i)),
+  metric: "size",
+  splitBy: "series",
+  snap: D.snapshots.length - 1,
+};
+
+/** Refill a selection in place; the chip handlers close over the Set itself. */
+function setTo(target, source) {
+  target.clear();
+  for (const v of source) target.add(v);
+}
+
+const state = {
+  series: new Set(DEFAULTS.series),
+  arch: new Set(DEFAULTS.arch),
+  pocket: new Set(DEFAULTS.pocket),
+  comp: new Set(DEFAULTS.comp),
+  metric: DEFAULTS.metric,
+  splitBy: DEFAULTS.splitBy,
+  view: "time",
+  snap: DEFAULTS.snap,
+};
+
+/** Every filter and control back to what the page opened with.  Which tab you
+    are on is navigation rather than a filter, so it is left where it is. */
+function resetDefaults() {
+  setTo(state.series, DEFAULTS.series);
+  setTo(state.arch, DEFAULTS.arch);
+  setTo(state.pocket, DEFAULTS.pocket);
+  setTo(state.comp, DEFAULTS.comp);
+  state.metric = DEFAULTS.metric;
+  state.splitBy = DEFAULTS.splitBy;
+  state.snap = DEFAULTS.snap;
+}
 
 /* -------------------------------------------------------------- formatting */
 
@@ -385,14 +423,19 @@ function scanIndex(fn) {
     if (!state.arch.has(rows[i + 2])) continue;
     if (!state.comp.has(rows[i + 3])) continue;
     if (!state.pocket.has(rows[i + 4])) continue;
-    fn(rows[i], rows[i + 1], rows[i + 2], rows[i + 5], rows[i + 6],
-       rows[i + 7], rows[i + 8]);
+    fn(rows[i], rows[i + 1], rows[i + 2], rows[i + 3], rows[i + 4],
+       rows[i + 5], rows[i + 6], rows[i + 7], rows[i + 8]);
   }
 }
 
-/** timeline(), but over index files; same shape, so splitLines() fits it. */
-function indexTimeline() {
-  const sp = split();
+/** timeline(), but over index files; same shape, so splitLines() fits it.
+
+    Takes the dimension to split on rather than reading the "one line per"
+    control, because this tab draws pocket and component as lines too, and an
+    index file has exactly one of each -- so any of the four is a clean split
+    with no double counting.
+ */
+function indexTimelineBy(sp, keyOf) {
   const perKey = new Map();
   const blank = () => ({ files: 0, n: 0, kn: 0, csize: 0, usize: 0 });
   const totals = D.snapshots.map(blank);
@@ -405,12 +448,28 @@ function indexTimeline() {
     cell.files++; cell.n += n; cell.kn += kn; cell.csize += c; cell.usize += u;
   }
 
-  scanIndex((snap, ser, arch, n, kn, c, u) => {
+  scanIndex((snap, ser, arch, comp, pocket, n, kn, c, u) => {
     const t = totals[snap];
     t.files++; t.n += n; t.kn += kn; t.csize += c; t.usize += u;
-    add(sp.key === "arch" ? arch : ser, snap, n, kn, c, u);
+    add(keyOf(ser, arch, comp, pocket), snap, n, kn, c, u);
   });
   return { perKey, totals, split: sp };
+}
+
+function indexTimeline() {
+  const sp = split();
+  return indexTimelineBy(
+    sp, (ser, arch) => (sp.key === "arch" ? arch : ser));
+}
+
+/** The two splits this tab adds, as the shape splitLines() expects. */
+function pocketSplit() {
+  return { key: "pocket", names: DATA.pockets, sel: state.pocket,
+           slots: pocketSlots, label: "pocket" };
+}
+function componentSplit() {
+  return { key: "component", names: D.components, sel: state.comp,
+           slots: compSlots, label: "component" };
 }
 
 /** kernel/total bytes at one snapshot, deduplicated across the selection. */
@@ -640,7 +699,7 @@ function barChart(host, opts) {
 
 /* ----------------------------------------------------------------- filters */
 
-function chipRow(label, values, selected, onToggle, colourFor) {
+function chipRow(label, values, selected, onToggle, colourFor, extras) {
   const row = document.createElement("div");
   row.className = "frow";
   const name = document.createElement("div");
@@ -676,6 +735,15 @@ function chipRow(label, values, selected, onToggle, colourFor) {
     render();
   });
   chips.appendChild(all);
+  for (const extra of extras || []) {
+    const b = document.createElement("button");
+    b.className = "chip allnone";
+    b.type = "button";
+    b.textContent = extra[0];
+    b.title = extra[1];
+    b.addEventListener("click", () => { extra[2](); render(); });
+    chips.appendChild(b);
+  }
   row.appendChild(chips);
   return row;
 }
@@ -688,7 +756,12 @@ function buildFilters() {
   const host = document.getElementById("filters");
   host.innerHTML = "";
   host.appendChild(chipRow("Series", D.series, state.series, toggler(state.series),
-                           i => seriesColour(i)));
+                           i => seriesColour(i),
+                           [["select default",
+                             "the series still changing size at the most " +
+                             "recent snapshot, which is what the page opens " +
+                             "with",
+                             () => setTo(state.series, DEFAULTS.series)]]));
   host.appendChild(chipRow("Arch", D.arches, state.arch, toggler(state.arch),
                            i => archColour(i)));
   host.appendChild(chipRow("Pocket", DATA.pockets, state.pocket, toggler(state.pocket)));
@@ -1160,6 +1233,36 @@ function viewLists(host) {
          "and is counted there.");
   }
 
+  const byPocket = indexTimelineBy(pocketSplit(), (s, a, c, p) => p);
+  const byComp = indexTimelineBy(componentSplit(), (s, a, c) => c);
+
+  const pocketCard = card(host, "Package lists, per pocket",
+    "Compressed size. The release pocket is most of the length of the lists " +
+    "and almost none of the kernels in them: it is frozen on release day, so " +
+    "every ABI published since lands in -updates and -security instead.");
+  const pocketSize = splitLines(byPocket, c => c.csize);
+  lineChart(pocketCard, {
+    x: xs,
+    xTitle: i => stamp(D.snapshots[i]),
+    fmt: bytes,
+    series: pocketSize.series,
+  });
+  legend(pocketCard, pocketSize.series.map(l => [l.name, l.colour]));
+  dropNote(pocketCard, pocketSize);
+
+  const compCard = card(host, "Package lists, per component",
+    "Compressed size. universe is most of what makes the lists long, and " +
+    "almost none of what makes them kernels.");
+  const compSize = splitLines(byComp, c => c.csize);
+  lineChart(compCard, {
+    x: xs,
+    xTitle: i => stamp(D.snapshots[i]),
+    fmt: bytes,
+    series: compSize.series,
+  });
+  legend(compCard, compSize.series.map(l => [l.name, l.colour]));
+  dropNote(compCard, compSize);
+
   const entCard = card(host, "Entries in the package lists",
     "One entry per stanza, counted as the indexes list them rather than as " +
     "the pool stores them: a package published to both -updates and -security " +
@@ -1199,9 +1302,42 @@ function viewLists(host) {
   legend(shareCard, [["of archive bytes", "var(--s2)"],
                      ["of list entries", "var(--s1)"]]);
 
+  const kshare = c => (c.n ? 100 * c.kn / c.n : null);
+
+  const pocketShareCard = card(host, "Kernel share of the lists, per pocket",
+    "The same ratio within each pocket's own indexes. Untick release in the " +
+    "filter above and the overall figure jumps to meet these.");
+  const pocketShare = splitLines(byPocket, kshare);
+  lineChart(pocketShareCard, {
+    x: xs,
+    xTitle: i => stamp(D.snapshots[i]),
+    fmt: v => v.toFixed(0) + "%",
+    minMax: 10,
+    height: 260,
+    series: pocketShare.series,
+  });
+  legend(pocketShareCard, pocketShare.series.map(l => [l.name, l.colour]));
+  dropNote(pocketShareCard, pocketShare);
+
+  const compShareCard = card(host, "Kernel share of the lists, per component",
+    "restricted is where linux-restricted-modules and its linux-objects-* " +
+    "live, which is why it is the most kernel-dense component even though " +
+    "main carries the kernels themselves.");
+  const compShare = splitLines(byComp, kshare);
+  lineChart(compShareCard, {
+    x: xs,
+    xTitle: i => stamp(D.snapshots[i]),
+    fmt: v => v.toFixed(0) + "%",
+    minMax: 10,
+    height: 260,
+    series: compShare.series,
+  });
+  legend(compShareCard, compShare.series.map(l => [l.name, l.colour]));
+  dropNote(compShareCard, compShare);
+
   snapshotChooser(host, body => {
     const byArch = new Map();
-    scanIndex((snap, ser, arch, n, kn, c, u) => {
+    scanIndex((snap, ser, arch, comp, pocket, n, kn, c, u) => {
       if (snap !== state.snap) return;
       let a = byArch.get(arch);
       if (!a) byArch.set(arch, a = { n: 0, kn: 0, csize: 0, files: 0 });
@@ -1351,6 +1487,11 @@ if (!DATA.byIndex) {
 
 document.querySelectorAll(".tab").forEach(t =>
   t.addEventListener("click", () => { state.view = t.dataset.view; render(); }));
+
+document.getElementById("resetbtn").addEventListener("click", () => {
+  resetDefaults();
+  render();
+});
 
 document.getElementById("themebtn").addEventListener("click", () => {
   const root = document.documentElement;
