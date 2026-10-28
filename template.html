@@ -186,6 +186,13 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     <div class="value" id="tile-share">–</div>
     <div class="note" id="tile-share-note"></div>
   </div>
+  <!-- Series with no snapshot history, so counted in nothing else on the
+       page.  Hidden unless the dataset carries them. -->
+  <div class="tile" id="tile-live" hidden>
+    <div class="label">ALSO ON THE MIRROR</div>
+    <div class="value" id="tile-live-value">–</div>
+    <div class="note" id="tile-live-note"></div>
+  </div>
 </div>
 
 <div class="filters" id="filters"></div>
@@ -1845,6 +1852,20 @@ function updateTiles() {
     cur.total ? pct(cur.kernel / cur.total) : "-";
   document.getElementById("tile-share-note").textContent =
     "of " + bytes(cur.total) + " " + scope;
+
+  // The series read from the live archive are in none of the numbers above --
+  // they have no history to put on a time axis -- so they get said out loud
+  // here rather than only in their card on the Whole archive tab.  Without
+  // this the page gives no sign they exist until you go looking.
+  const extra = DATA.live && DATA.live.series;
+  if (extra && extra.length) {
+    const tile = document.getElementById("tile-live");
+    document.getElementById("tile-live-value").textContent =
+      bytes(extra.reduce((a, r) => a + r.size, 0));
+    document.getElementById("tile-live-note").textContent =
+      extra.map(r => r.name).join(" + ") + ", no snapshot history";
+    tile.hidden = false;
+  }
 }
 
 function render() {

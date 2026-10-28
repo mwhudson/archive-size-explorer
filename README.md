@@ -19,8 +19,9 @@ default** on the series row puts that selection back once you have clicked
 around, and **Reset** in the header puts every filter and control back to how
 the page opened, without moving you off the tab you are on.
 
-Two series sit outside all of that, in a card of their own below the archive
-charts: trusty and xenial. The snapshot service cannot answer for them —
+Two series sit outside all of that: trusty and xenial. They get a tile in the
+header, visible on every tab, and a card of their own below the archive
+charts. The snapshot service cannot answer for them —
 `dists/trusty` is absent at every stamp in every pocket, and xenial is there
 only as `-updates` and `-security`, without its release pocket — so they are
 read from the live archive instead, and reported as of the build rather than as
