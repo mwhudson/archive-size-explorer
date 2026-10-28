@@ -32,9 +32,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kernel_sizes import (  # noqa: E402
     ARCHIVE_BASE, Builder, Cache, Fetcher, CANDIDATE_SERIES,
     DEFAULT_COMPONENTS, LIVE, LIVE_SERIES, MIRROR_MAX_AGE, OTHER, POCKETS,
-    RELEASE_ORDER, SEPARATE_SERIES, aggregate, aggregate_key, count_index,
-    default_cache_dir, kernel_predicate, log, merge_rows, probe_mirror,
-    snapshots,
+    MIRROR_REMOVED, RELEASE_ORDER, SEPARATE_SERIES, aggregate, aggregate_key,
+    count_index, default_cache_dir, kernel_predicate, log, merge_rows,
+    probe_mirror, removed_after, snapshots,
 )
 
 
@@ -311,6 +311,69 @@ def fold_separate(builder, snap, series, bit, byclass, byflavour, byindex):
     return here, cached is not None
 
 
+def drop_removed(byclass, byflavour, byindex, series_list):
+    """Stop counting a series once it had left the mirror.
+
+    The aggregate tables say what the snapshot service held, which keeps a
+    suite long after the archive has dropped it.  This turns them into what
+    the archive held, by clearing a removed series' bit from every snapshot
+    after its removal and discarding whatever is then referenced by nobody.
+
+    Clearing a bit can collapse two rows onto one key -- the same class in the
+    same place, previously distinguished only by which series referenced it --
+    and those rows count disjoint sets of files, so the accumulators add.
+
+    Returns the three tables, and the number of bytes it stopped counting at
+    the most recent snapshot, which is the figure worth reporting.
+    """
+    gone = {s: i for i, s in enumerate(series_list) if s in MIRROR_REMOVED}
+    if not gone:
+        return byclass, byflavour, byindex, 0
+
+    def surviving_mask(snap, smask):
+        for series, bit in gone.items():
+            if smask >> bit & 1 and removed_after(series, snap):
+                smask &= ~(1 << bit)
+        return smask
+
+    last = max((k[0] for k in byclass), default=None)
+    dropped = 0
+    out_class, out_flav = {}, {}
+    for key, acc in byclass.items():
+        snap, smask = key[0], key[1]
+        kept = surviving_mask(snap, smask)
+        if kept == smask:
+            out_class[key] = acc
+            continue
+        if not kept:
+            if snap == last:
+                dropped += acc[1]
+            continue
+        new_key = (snap, kept) + key[2:]
+        prev = out_class.get(new_key)
+        if prev is None:
+            out_class[new_key] = list(acc)
+        else:
+            for i in range(len(acc)):
+                prev[i] += acc[i]
+    for key, acc in byflavour.items():
+        snap, smask = key[0], key[1]
+        kept = surviving_mask(snap, smask)
+        if not kept:
+            continue
+        new_key = key if kept == smask else (snap, kept) + key[2:]
+        prev = out_flav.get(new_key)
+        if prev is None:
+            out_flav[new_key] = list(acc)
+        else:
+            for i in range(len(acc)):
+                prev[i] += acc[i]
+    # Index rows name their series outright, so there is nothing to merge.
+    out_idx = {k: v for k, v in byindex.items()
+               if not removed_after(k[1], k[0])}
+    return out_class, out_flav, out_idx, dropped
+
+
 def collect(builder, snaps, series_list, separate=(), progress=True):
     """Aggregate each snapshot, with every series folded into one map.
 
@@ -474,6 +537,10 @@ def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None,
         # above: they have no history, and inventing one by attaching them to
         # the newest snapshot would put a step in every total.
         "live": {"source": ARCHIVE_BASE, "series": live} if live else None,
+        # When each series left the mirror, for the page to explain why its
+        # line stops.  Only the ones actually drawn.
+        "mirrorRemoved": {s: MIRROR_REMOVED[s][1] for s in kept
+                          if s in MIRROR_REMOVED} or None,
         "dims": {
             "snapshots": used_snaps,
             "series": kept,
@@ -589,6 +656,12 @@ def cmd_build(args):
         log("nothing collected -- wrong window, or an --offline run with a "
             "cold cache")
         return 1
+    byclass, byflavour, byindex, dropped = drop_removed(
+        byclass, byflavour, byindex, all_series)
+    if dropped:
+        log("not counting %.1f GiB at the latest snapshot: %s left the mirror"
+            % (dropped / 2 ** 30,
+               ", ".join(s for s in all_series if s in MIRROR_REMOVED)))
     data = encode(byclass, byflavour, byindex, snaps, all_series,
                   mirrored=mirrored, live=live)
     log("collected %d class rows, %d flavour rows, %d index rows across %s"

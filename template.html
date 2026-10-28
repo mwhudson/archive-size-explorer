@@ -242,6 +242,7 @@ async function loadData() {
     generated: PAYLOAD.generated, otherClass: PAYLOAD.otherClass,
     pockets: PAYLOAD.pockets, dims: PAYLOAD.dims,
     mirrored: PAYLOAD.mirrored, live: PAYLOAD.live,
+    mirrorRemoved: PAYLOAD.mirrorRemoved,
   };
   for (const t of PAYLOAD.tables) {
     const n = t.rows, stride = t.stride;
@@ -1176,6 +1177,7 @@ function viewTime(host, tl) {
   });
   legend(shareCard, shareLines.series.map(l => [l.name, l.colour]));
   dropNote(shareCard, shareLines);
+  removedNote(shareCard);
 
   const absLines = splitLines(tl, c => c.kernel);
   const absCard = card(host, "Kernel bytes, per " + tl.split.label,
@@ -1431,6 +1433,7 @@ function viewArchive(host) {
   });
   legend(splitCard, sizeLines.series.map(l => [l.name, l.colour]));
   dropNote(splitCard, sizeLines);
+  removedNote(splitCard);
 
   const shareCard = card(host, "Kernel share of the whole archive",
     "The two lines from the first chart as a ratio.");
@@ -1790,6 +1793,29 @@ function legend(host, entries) {
  *  total, and a cliff into the rate view.  These numbers are "now" even when
  *  the charts end weeks earlier.
  */
+/** Why some lines stop before the right-hand edge.
+ *
+ *  The tables are what the archive carried, not what the snapshot service
+ *  holds: the service keeps a suite it has ingested and goes on serving its
+ *  last state, so without this the removed series would run on forever.  A
+ *  file one of them shared with a surviving series is still counted, because
+ *  it is still on the mirror -- only what nobody else references goes.
+ */
+function removedNote(host) {
+  const gone = DATA.mirrorRemoved;
+  if (!gone) return;
+  const names = Object.keys(gone).sort(
+    (a, b) => D.series.indexOf(a) - D.series.indexOf(b));
+  if (!names.length) return;
+  note(host, "Lines for " +
+    names.map(n => n + " (" + gone[n] + ")").join(", ") +
+    " stop where the series left archive.ubuntu.com, dated from the Internet " +
+    "Archive's captures of its index. The snapshot service keeps serving an " +
+    "EOL suite indefinitely, so counting it after that point would describe " +
+    "the snapshot service rather than a mirror. Files such a series shared " +
+    "with one still carried are unaffected.");
+}
+
 function liveCard(host) {
   const info = DATA.live;
   if (!info || !info.series || !info.series.length) return;

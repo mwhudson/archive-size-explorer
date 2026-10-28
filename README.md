@@ -19,6 +19,33 @@ default** on the series row puts that selection back once you have clicked
 around, and **Reset** in the header puts every filter and control back to how
 the page opened, without moving you off the tab you are on.
 
+The tables describe what the archive carried, which is not the same as what the
+snapshot service holds. The service keeps a suite once it has ingested it and
+goes on serving the last state it saw, so `dists/kinetic` still answers 200 at
+today's stamp — every pocket of it, three years after the archive stopped
+carrying it. Counting that would describe the snapshot service rather than a
+mirror, so a series stops contributing once it left.
+
+Nothing in the archive records when that happened. A suite's `Release` Date,
+its `Last-Modified` and its directory mtime are all preserved through the move
+to old-releases.ubuntu.com, so they give the last publish, not the removal. The
+dates in `MIRROR_REMOVED` come from the Internet Archive's captures of the
+`dists/` autoindex, which is a dated record of what the archive carried: each
+entry is the last capture still showing the series and the first without it.
+kinetic is corroborated from the other side, appearing in an old-releases
+capture of 2023-08-14 and absent from one of 2023-06-07. The same method says
+precise went in 2021 and lucid earlier still, which is why neither needs adding
+— the series ever carried during the snapshot window are exactly the twelve
+plus trusty and xenial.
+
+Dropping a series is not dropping its bytes. A pool file it shared with a
+series still carried is still on the mirror, so only what nobody else
+references stops counting: of kinetic's 489.66 GiB at the snapshot after it
+went, 324.40 GiB was exclusively its own and left, and 165.27 GiB stayed
+because jammy and others reference the same files. Across all four removed
+series that is 1693.9 GiB no longer counted at the latest snapshot, taking the
+archive total from 10.1 TiB to 8.3 TiB.
+
 Two series sit outside all of that: trusty and xenial. They get a tile in the
 header, visible on every tab, and a card of their own below the archive
 charts. The snapshot service cannot answer for them —

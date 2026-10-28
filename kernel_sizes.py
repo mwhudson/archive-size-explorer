@@ -119,6 +119,39 @@ SEPARATE_SERIES = []
 # window exists to suppress.
 LIVE_SERIES = ["trusty", "xenial"]
 
+# When each series left archive.ubuntu.com, so that the page can stop counting
+# it rather than carrying it forever.
+#
+# The snapshot service cannot answer this.  It keeps a suite it has ingested
+# and goes on serving the last state it saw, so dists/kinetic still answers 200
+# at today's stamp, three years after the archive stopped carrying it -- and no
+# pocket of it ever 404s, which is a thing worth having checked rather than
+# assumed.  Nor do the mirrors say: a suite's Release Date, its Last-Modified
+# and its directory mtime are all preserved through the move to
+# old-releases.ubuntu.com, so they record the last publish, not the removal.
+#
+# These come from the Internet Archive's captures of the dists/ autoindex,
+# which is a dated record of what the archive carried.  Each entry is
+# (last capture still showing it, first capture without it); the second is
+# what gets used, so a series is counted while it was certainly there.
+# kinetic is corroborated from the other side -- it appears in an old-releases
+# capture of 2023-08-14 and is absent from one of 2023-06-07.
+#
+# A series absent from here is treated as never removed, which is the right
+# default: it is what every series still on the mirror needs.
+MIRROR_REMOVED = {
+    "kinetic":  ("2023-06-10", "2023-08-14"),
+    "lunar":    ("2024-11-17", "2024-11-26"),
+    "mantic":   ("2024-11-17", "2024-11-26"),
+    "oracular": ("2025-09-02", "2025-09-13"),
+}
+
+
+def removed_after(series, snapshot):
+    """Whether this series had left the mirror by this snapshot."""
+    bounds = MIRROR_REMOVED.get(series)
+    return bool(bounds) and snapshot[:8] >= bounds[1].replace("-", "")
+
 # Every series the tool knows, in release order.  Deliberately a separate list
 # from the two above: their order is load-bearing for the cache, since the
 # aggregate key is a hash of the series list and a mask is a bit position in
