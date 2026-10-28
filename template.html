@@ -432,6 +432,7 @@ const DEFAULTS = {
   metric: "size",
   splitBy: "series",
   shown: "total",
+  rateWindow: 3,
   snap: D.snapshots.length - 1,
 };
 
@@ -449,6 +450,7 @@ const state = {
   metric: DEFAULTS.metric,
   splitBy: DEFAULTS.splitBy,
   shown: DEFAULTS.shown,
+  rateWindow: DEFAULTS.rateWindow,
   view: "time",
   snap: DEFAULTS.snap,
 };
@@ -463,6 +465,7 @@ function resetDefaults() {
   state.metric = DEFAULTS.metric;
   state.splitBy = DEFAULTS.splitBy;
   state.shown = DEFAULTS.shown;
+  state.rateWindow = DEFAULTS.rateWindow;
   state.snap = DEFAULTS.snap;
 }
 
@@ -721,17 +724,81 @@ function spanTicks(lo, hi, want) {
   return out;
 }
 
-/** Point-to-point differences, for the change view.
+/** Gridline values for a log axis running from lo to hi.
 
-    A point whose predecessor is missing becomes null rather than being
-    differenced against nothing.  A series that starts mid-window would
-    otherwise show its entire size as a one-off spike on its first snapshot,
-    which flattens every real movement in the chart against it.
+    These are labels only -- the axis runs from the data, and these are the
+    round numbers that fall inside it.  That is the opposite of ticks(), which
+    rounds the axis outwards to its top tick, and it is deliberate: the whole
+    archive spans 1.8 to 7.1 TiB, and rounding that out to a clean 1 .. 10 TiB
+    would spend two thirds of the plot on empty space.
+
+    A log axis here covers anything from half a decade to six (a per-series
+    chart has bionic frozen in megabytes while jammy moves in terabytes), so
+    1-2-5 is thinned to decades and then to every other decade rather than
+    coarsened, which keeps whatever survives a round number.  Being labels
+    rather than the domain, dropping one can no longer push the data off the
+    top of the plot.
  */
-function deltas(points) {
+function logTicks(lo, hi) {
+  // 1-2-5 leaves a range narrower than about a decade with one or two labels
+  // on it, which is not an axis.  Over a short span the gaps between round
+  // numbers are small enough to use all of them.
+  const mults = Math.log10(hi / lo) < 1.2
+    ? [1, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8, 9] : [1, 2, 5];
+  const out = [];
+  for (let k = Math.floor(Math.log10(lo)); k <= Math.ceil(Math.log10(hi)); k++) {
+    for (const m of mults) {
+      const v = m * Math.pow(10, k);
+      if (v >= lo && v <= hi) out.push(v);
+    }
+  }
+  out.sort((a, b) => a - b);
+  const decade = v => Math.abs(Math.log10(v) - Math.round(Math.log10(v))) < 1e-9;
+  let thin = out;
+  if (thin.length > 8) {
+    // Decades first, but only if there are enough of them to be an axis: a
+    // span under a decade contains one at most, and thinning to that single
+    // label would leave the chart with nothing to read values against.
+    const dec = thin.filter(decade);
+    thin = dec.length >= 3 ? dec : thin;
+    while (thin.length > 8) thin = thin.filter((_, n) => n % 2 === 0);
+  }
+  // A range too narrow to contain two round numbers gets its own ends instead.
+  return thin.length >= 2 ? thin : [lo, hi];
+}
+
+/** Midnight UTC of a snapshot stamp, as a millisecond value. */
+function snapDay(s) {
+  return Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8));
+}
+
+/** How many snapshots back a window of `months` reaches. */
+function windowSnapshots(months) {
+  return Math.max(1, Math.round(months * 30.4375 / (snapSpacing() || 30.4375)));
+}
+
+/** The trailing rate of change, in units per 30-day month.
+
+    A single interval is mostly noise -- a quarter of the weekly page's
+    consecutive differences flip sign -- and one archive-wide removal is forty
+    times the median week, so it sets the axis and flattens everything else
+    into the zero line.  Measuring across a window fixes both at once: it
+    averages the noise out, and it spreads a one-off event over the window
+    instead of letting it spike.
+
+    Per month rather than per snapshot, so that the monthly and the weekly
+    build of this page read off the same axis.  The divisor is the real
+    elapsed time, not the window's nominal length, because monthly snapshots
+    are not all the same number of days.
+ */
+function rates(points, months) {
+  const back = windowSnapshots(months);
   return points.map((v, i) => {
-    const prev = i ? points[i - 1] : null;
-    return (v === null || prev === null) ? null : v - prev;
+    const prev = i >= back ? points[i - back] : null;
+    if (v === null || prev === null) return null;
+    const span = (snapDay(D.snapshots[i]) - snapDay(D.snapshots[i - back]))
+                 / (30.4375 * 86400000);
+    return span > 0 ? (v - prev) / span : null;
   });
 }
 
@@ -756,36 +823,56 @@ function lineChart(host, opts) {
   const pad = { top: 12, right: 96, bottom: 30, left: 62 };
   const plotW = width - pad.left - pad.right;
   const plotH = height - pad.top - pad.bottom;
-  // Differencing happens here rather than at every call site, so the one
-  // toggle reaches all of these charts at once.
-  const change = state.shown === "change";
-  const series = change ? opts.series.map(s => ({
-    name: s.name, colour: s.colour, points: deltas(s.points),
-  })) : opts.series;
-  const fmt = change ? (opts.diffFmt || (v => signed(v, opts.fmt))) : opts.fmt;
+  // What the toggle does lives here rather than at the fourteen call sites, so
+  // one control reaches every line chart on the page.
+  const rate = state.shown === "rate";
+  const logY = state.shown === "log";
+  const series = rate
+    ? opts.series.map(s => ({ name: s.name, colour: s.colour,
+                              points: rates(s.points, state.rateWindow) }))
+    : logY
+    // Zero and below have no position on a log axis.  A gap says "cannot be
+    // drawn here", which is the truth, where clamping to the bottom tick would
+    // invent a value and draw a line to it.
+    ? opts.series.map(s => ({ name: s.name, colour: s.colour,
+                              points: s.points.map(p => (p > 0 ? p : null)) }))
+    : opts.series;
+  const fmt = rate ? (v => signed(v, opts.diffFmt || opts.fmt) + "/mo")
+            : logY ? (opts.logFmt || opts.fmt) : opts.fmt;
 
   const svg = el("svg", { width, height, viewBox: "0 0 " + width + " " + height,
                           role: "img",
                           "aria-label": (opts.title || "chart") +
-                                        (change ? ", change per snapshot" : "") });
+                            (rate ? ", rate of change" : "") +
+                            (logY ? ", logarithmic scale" : "") });
 
   const xs = opts.x;
   const vals = series.flatMap(s => s.points.filter(p => p !== null));
-  // Zero stays in range either way: a change chart is unreadable without the
-  // line it is measured against.  minMax is a floor for totals only -- it is
-  // there to stop a flat share chart filling the plot with noise, and a change
-  // chart has its own floor in the zero line.
-  const maxY = Math.max(change ? 0 : (opts.minMax || 0), 0, ...vals);
-  const yTicks = change ? spanTicks(Math.min(0, ...vals), maxY, 5) : ticks(maxY, 5);
-  const lo = yTicks[0];
-  const top = yTicks[yTicks.length - 1] || 1;
+  let yTicks, Y;
+  if (logY) {
+    // The domain is the data: every positive point is inside the plot by
+    // construction, however the labels end up being thinned.
+    const hiV = vals.length ? Math.max(...vals) : 1;
+    const loV = vals.length ? Math.min(...vals) : hiV / 10;
+    const l0 = Math.log10(loV === hiV ? loV / 10 : loV);
+    const l1 = Math.log10(hiV);
+    yTicks = logTicks(Math.pow(10, l0), hiV);
+    Y = v => pad.top + plotH - plotH * ((Math.log10(v) - l0) / ((l1 - l0) || 1));
+  } else if (rate) {
+    // Zero stays in range: a rate chart is unreadable without the line it is
+    // measured against.  minMax is a floor for totals only -- it stops a flat
+    // share chart filling the plot with noise, and a rate chart has its own
+    // floor in the zero line.
+    yTicks = spanTicks(Math.min(0, ...vals), Math.max(0, ...vals), 5);
+    const lo = yTicks[0];
+    const top = yTicks[yTicks.length - 1] || 1;
+    Y = v => pad.top + plotH - plotH * ((v - lo) / ((top - lo) || 1));
+  } else {
+    yTicks = ticks(Math.max(opts.minMax || 0, 0, ...vals), 5);
+    const top = yTicks[yTicks.length - 1] || 1;
+    Y = v => pad.top + plotH - plotH * (v / top);
+  }
   const X = i => pad.left + (xs.length === 1 ? plotW / 2 : plotW * i / (xs.length - 1));
-  // Scales from lo rather than from zero.  Written so that lo == 0 -- every
-  // chart showing totals -- reduces to exactly the old expression, including
-  // the order of the arithmetic: a chart that has not changed should not move
-  // by a rounding bit.
-  const span = (top - lo) || 1;
-  const Y = v => pad.top + plotH - plotH * ((v - lo) / span);
 
   for (const t of yTicks) {
     el("line", { x1: pad.left, x2: pad.left + plotW, y1: Y(t), y2: Y(t),
@@ -800,7 +887,8 @@ function lineChart(host, opts) {
     const t = el("text", { x: X(i), y: height - 10, "text-anchor": "middle" }, svg);
     t.textContent = label;
   });
-  el("line", { x1: pad.left, x2: pad.left + plotW, y1: Y(0), y2: Y(0),
+  const base = logY ? yTicks[0] : 0;
+  el("line", { x1: pad.left, x2: pad.left + plotW, y1: Y(base), y2: Y(base),
                stroke: "var(--axis)", "stroke-width": 1 }, svg);
 
   for (const s of series) {
@@ -992,9 +1080,19 @@ function buildFilters() {
                                             ["arch", "Architecture"]], "splitBy"));
   host.appendChild(pickRow("Lines show", [
     ["total", "Totals", "the value at each snapshot"],
-    ["change", "Change", "the difference from the snapshot before, so the " +
-                         "charts read as a rate rather than a level"],
+    ["log", "Totals, log scale",
+     "the same values on a logarithmic axis, where a straight line is steady " +
+     "percentage growth and the slope is the rate"],
+    ["rate", "Rate of change",
+     "how fast it is growing, averaged over a trailing window so that one " +
+     "unusual snapshot does not set the scale"],
   ], "shown"));
+  // Only worth the row when there is a rate to apply it to.
+  if (state.shown === "rate") {
+    host.appendChild(pickRow("Rate over", [
+      [1, "1 month"], [3, "3 months"], [6, "6 months"],
+    ], "rateWindow"));
+  }
 }
 
 /* ------------------------------------------------------------------- views */
@@ -1035,7 +1133,9 @@ function viewTime(host, tl) {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
     fmt: v => v.toFixed(0) + "%",
-    diffFmt: v => signed(v, x => x.toFixed(1) + " pp"),
+    diffFmt: v => v.toFixed(1) + " pp",
+    logFmt: v => (v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(1)
+                                                  : v.toFixed(2)) + "%",
     minMax: 10,
     series: shareLines.series,
   });
@@ -1303,7 +1403,9 @@ function viewArchive(host) {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
     fmt: v => v.toFixed(0) + "%",
-    diffFmt: v => signed(v, x => x.toFixed(1) + " pp"),
+    diffFmt: v => v.toFixed(1) + " pp",
+    logFmt: v => (v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(1)
+                                                  : v.toFixed(2)) + "%",
     minMax: 10,
     height: 240,
     series: [{ name: "kernel share", colour: "var(--s1)",
@@ -1499,7 +1601,9 @@ function viewLists(host) {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
     fmt: v => v.toFixed(0) + "%",
-    diffFmt: v => signed(v, x => x.toFixed(1) + " pp"),
+    diffFmt: v => v.toFixed(1) + " pp",
+    logFmt: v => (v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(1)
+                                                  : v.toFixed(2)) + "%",
     minMax: 10,
     height: 260,
     series: [
@@ -1522,7 +1626,9 @@ function viewLists(host) {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
     fmt: v => v.toFixed(0) + "%",
-    diffFmt: v => signed(v, x => x.toFixed(1) + " pp"),
+    diffFmt: v => v.toFixed(1) + " pp",
+    logFmt: v => (v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(1)
+                                                  : v.toFixed(2)) + "%",
     minMax: 10,
     height: 260,
     series: pocketShare.series,
@@ -1539,7 +1645,9 @@ function viewLists(host) {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
     fmt: v => v.toFixed(0) + "%",
-    diffFmt: v => signed(v, x => x.toFixed(1) + " pp"),
+    diffFmt: v => v.toFixed(1) + " pp",
+    logFmt: v => (v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(1)
+                                                  : v.toFixed(2)) + "%",
     minMax: 10,
     height: 260,
     series: compShare.series,
@@ -1683,18 +1791,29 @@ function render() {
       "Select at least one of each filter.</div></div>";
     return;
   }
-  if (state.shown === "change" && state.view !== "breakdown" &&
+  if (state.shown !== "total" && state.view !== "breakdown" &&
       state.view !== "table") {
     const bar = document.createElement("div");
     bar.className = "cardsub";
     bar.style.margin = "0 0 14px";
-    const days = snapSpacing();
-    bar.textContent =
-      "Every line below is the change since the previous snapshot" +
-      (days ? ", about " + days + " days" : "") + ", rather than a total. A " +
-      "point above the zero line grew over that interval, one below it " +
-      "shrank. The first snapshot of a line has nothing to difference " +
-      "against, so it is not drawn.";
+    if (state.shown === "log") {
+      bar.textContent =
+        "The vertical axis below is logarithmic. A straight line is steady " +
+        "percentage growth and its slope is the rate, so a line that is " +
+        "flattening is growing more slowly even while it still climbs, and " +
+        "series orders of magnitude apart in size are all readable at once. " +
+        "A value of zero has no position on this axis and leaves a gap.";
+    } else {
+      const n = windowSnapshots(state.rateWindow);
+      bar.textContent =
+        "Every line below is how fast the value is changing, averaged over " +
+        "the trailing " + state.rateWindow +
+        (state.rateWindow === 1 ? " month" : " months") + " -- " + n +
+        (n === 1 ? " snapshot" : " snapshots") + " at this resolution -- and " +
+        "quoted per month. A point above the zero line is growing, one below " +
+        "it is shrinking. A line starts only once there is a full window " +
+        "behind it.";
+    }
     host.appendChild(bar);
   }
   if (state.view === "lists") viewLists(host);

@@ -27,21 +27,40 @@ does the same for `dists/` rather than `pool/`; the other tabs break the archive
 down. A "one line per" control switches the charts between a line per series and
 a line per architecture.
 
-**Lines show** switches every line chart between totals and the change since
-the previous snapshot. Totals answer "how big is it"; change answers "what just
-happened", and the two are not equally easy to read off one line. With the
-series the page opens with, the archive *shed* 890 GiB between the 2026-06 and
-2026-07 monthly snapshots — a step that is easy to miss in a curve that mostly
-goes up, and an unmissable spike below the zero line in the change view. The
-weekly page narrows the same event to the single week ending 2026-06-17.
+**Lines show** puts every line chart on one of three scales. A total says how
+big something is and is bad at saying how fast it is moving, so the other two
+exist to answer that, from opposite ends.
 
-Two things to know about reading it. The interval is whatever the snapshot
-spacing is, and monthly snapshots are not all the same length, so a monthly
-change chart is per-month and not per-day. And the first snapshot of each line
-is not drawn: differencing it against nothing is meaningless, and treating a
-series' first appearance as a change equal to its whole size would flatten
-every real movement on the chart against that one spike. On a share chart the
-unit becomes percentage points rather than percent.
+**Totals, log scale** leaves the numbers alone and changes the axis. The
+archive has grown about 47% a year compound since 2023-03, and on a log axis
+that compounding is a straight line: the slope *is* the growth rate, so a line
+flattening out is slowing down even while it still climbs. It also rescues the
+charts whose lines are orders of magnitude apart — per-series kernel bytes
+spans 10 GiB to 2 TiB, and several of the Package lists charts run from
+single-digit MiB to GiB, which on a linear axis means every line but the
+largest sits on the floor. It does *not* do much for the per-series size
+chart, where the lines are all within a factor of six of each other. Zero has
+no position on a log axis, so a zero leaves a gap rather than being quietly
+moved somewhere.
+
+**Rate of change** differences the series instead, over a trailing window set
+by **Rate over** and quoted per month. A single interval is almost all noise —
+a quarter of the weekly page's consecutive differences flip sign, and the one
+archive-wide removal in June 2026 is forty times the median week, so it alone
+sets the axis and squashes everything else onto the zero line. A window fixes
+both: at six months the jitter drops roughly sevenfold, the sign flips go to
+zero, and that removal becomes a dip in the rate instead of a cliff that
+rescales the chart. Then the trend is visible — the archive went from +25
+GiB/mo in late 2023 to +250 GiB/mo in early 2026, which is nowhere to be seen
+in a chart whose axis one bad week owns.
+
+The window is set in months and converted to a snapshot count from the actual
+spacing, so "3 months" means three snapshots on the monthly page and thirteen
+on the weekly one, and the two pages read off the same axis. The divisor is
+real elapsed time rather than the window's nominal length, because monthly
+snapshots are not all the same number of days. A line starts only once there
+is a full window behind it, and on a share chart the unit becomes percentage
+points per month.
 
 ## Using it
 
