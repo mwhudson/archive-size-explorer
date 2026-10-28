@@ -19,6 +19,34 @@ default** on the series row puts that selection back once you have clicked
 around, and **Reset** in the header puts every filter and control back to how
 the page opened, without moving you off the tab you are on.
 
+Two series sit outside all of that, in a card of their own below the archive
+charts: trusty and xenial. The snapshot service cannot answer for them —
+`dists/trusty` is absent at every stamp in every pocket, and xenial is there
+only as `-updates` and `-security`, without its release pocket — so they are
+read from the live archive instead, and reported as of the build rather than as
+of the last snapshot. That is also why they are not lines: the archive holds a
+single state, and attaching a series to the newest snapshot alone would step
+every total up by its whole size in one interval and leave a cliff in the rate
+view.
+
+Reading xenial both ways measures how big that gap is. From the snapshot
+service xenial is 121.5 GiB; from the live archive it is 413.6 GiB. The missing
+three quarters is its release pocket plus the architectures snapshot does not
+carry for it. trusty adds another 292.0 GiB, so between them that is around 706
+GiB of mirror the charts above count as nothing.
+
+The live read needs both of the archive's hosts. `archive.ubuntu.com` carries
+amd64 and i386 and nothing else; every other architecture is published to
+`ports.ubuntu.com` under its own root, a split the snapshot service hides by
+serving everything under one tree. A suite's `Release` on archive.ubuntu.com
+lists the ports indexes too, checksums and all, and the two hosts publish in
+step — so one `Release` plans fetches from both, and the checksum settles which
+host answered. None of it is cached: a cache entry is only valid while what it
+describes cannot change, and "now" has no such guarantee. The content-addressed
+blobs still make an unchanged suite cost only its `Release` files, which is
+about 11 seconds a build, and `--offline` skips it entirely — the card just
+does not appear.
+
 Which series those are cannot be read out of the snapshot data, which is worth
 knowing if you are tempted to derive it: the snapshot service keeps every suite
 it has ever seen, frozen at whatever it held on its last day, so `dists/kinetic`
@@ -380,6 +408,34 @@ enough that the bitwise pocket and series filters still work on them. That is
 also faster than what it replaces: a JSON literal that large has to go through
 the JavaScript parser before anything can be drawn, which costs more than the
 gunzip and the varints together.
+
+Adding a series to that list is not free, and the reason is worth knowing
+before trying it. A row's series field is a bitmask, and a bit is a position in
+the candidate list, so the aggregate key is a hash of the whole list: insert a
+series anywhere but the end and every cached mask means something different,
+which invalidates all of them. Append instead and the stored masks stay exactly
+correct — the key still changes, but migrating the cache is then a rename
+rather than a recomputation. `RELEASE_ORDER` is a separate list so that
+appending for the cache's sake cannot put a ten-year-old series at the newest
+end of the page: the candidate list's order is the cache's business, release
+order is the page's.
+
+Appending still leaves the new series with no history, because a cache hit is
+exactly what stops it being fetched. `SEPARATE_SERIES` is the way out for a
+series that shares no pool file with any other: those are aggregated alone,
+under a cache key naming only themselves, and folded in afterwards, so adding
+or dropping one leaves every other entry valid and costs only its own
+aggregation — about 4 seconds a snapshot against 60 to 90 for a whole-snapshot
+redo.
+
+It is only sound when the series really is disjoint. Summing series that share
+pool files counts each shared file once per series that references it, which
+across the twelve main series is 1.1 TiB — 10.6% of the archive, a figure
+`report` prints. `breakdown` merges the pool for real rather than trusting the
+split, so comparing its archive total against the page's is the check; they
+agreed to the byte when xenial was carried this way. The list is empty now,
+because the live archive turned out to be the better answer for the only series
+that qualified.
 
 One thing in the cache is not keyed by snapshot at all: the mirror probe, which
 is a fact about the archive now rather than about a point in history. It holds

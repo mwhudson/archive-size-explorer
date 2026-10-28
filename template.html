@@ -234,7 +234,7 @@ async function loadData() {
   const out = {
     generated: PAYLOAD.generated, otherClass: PAYLOAD.otherClass,
     pockets: PAYLOAD.pockets, dims: PAYLOAD.dims,
-    mirrored: PAYLOAD.mirrored,
+    mirrored: PAYLOAD.mirrored, live: PAYLOAD.live,
   };
   for (const t of PAYLOAD.tables) {
     const n = t.rows, stride = t.stride;
@@ -1485,6 +1485,8 @@ function viewArchive(host) {
     wrap.innerHTML = html;
     t.appendChild(wrap);
   });
+
+  liveCard(host);
 }
 
 /* ------------------------------------------------------------ the lists */
@@ -1771,6 +1773,50 @@ function legend(host, entries) {
     box.appendChild(item);
   }
   host.parentNode.appendChild(box);
+}
+
+/** Series the snapshot service cannot answer for, as of the build.
+ *
+ *  Read from the live archive, so there is one value and no history.  Its own
+ *  card rather than a line on the charts: attaching a series to the newest
+ *  snapshot alone would put a step the size of the whole series into every
+ *  total, and a cliff into the rate view.  These numbers are "now" even when
+ *  the charts end weeks earlier.
+ */
+function liveCard(host) {
+  const info = DATA.live;
+  if (!info || !info.series || !info.series.length) return;
+  const rows = info.series;
+  const c = card(host, "Also on the mirror, with no snapshot history",
+    "The snapshot service does not carry these series, so they cannot be " +
+    "drawn over time and are counted in nothing above. Read from " +
+    info.source + " when the page was built, which makes them current " +
+    "rather than as of the last snapshot.");
+  const wrap = document.createElement("div");
+  wrap.className = "tablewrap";
+  let html = "<table><thead><tr><th>Series</th><th>Download</th>" +
+             "<th>Installed</th><th>Kernels</th><th>Packages</th>" +
+             "<th>Architectures</th></tr></thead><tbody>";
+  for (const r of rows) {
+    html += "<tr><td>" + r.name + "</td>" +
+      '<td class="num">' + bytes(r.size) + "</td>" +
+      '<td class="num">' + bytes(r.isize) + "</td>" +
+      '<td class="num">' + bytes(r.kernelSize) + " (" +
+        (r.size ? (100 * r.kernelSize / r.size).toFixed(1) : "0") + "%)</td>" +
+      '<td class="num">' + r.packages.toLocaleString() + "</td>" +
+      "<td>" + (r.arches || []).join(" ") + "</td></tr>";
+  }
+  if (rows.length > 1) {
+    html += '<tr><td>all of them</td><td class="num">' +
+      bytes(rows.reduce((a, r) => a + r.size, 0)) + "</td>" +
+      '<td class="num">' + bytes(rows.reduce((a, r) => a + r.isize, 0)) +
+      "</td>" +
+      '<td class="num">' + bytes(rows.reduce((a, r) => a + r.kernelSize, 0)) +
+      "</td><td></td><td></td></tr>";
+  }
+  html += "</tbody></table>";
+  wrap.innerHTML = html;
+  c.appendChild(wrap);
 }
 
 function note(host, text) {

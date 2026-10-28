@@ -31,17 +31,36 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from kernel_sizes import (  # noqa: E402
     ARCHIVE_BASE, Builder, Cache, Fetcher, CANDIDATE_SERIES,
-    DEFAULT_COMPONENTS, MIRROR_MAX_AGE, OTHER, POCKETS, aggregate,
-    aggregate_key, count_index, default_cache_dir, kernel_predicate, log,
-    merge_rows, probe_mirror, snapshots,
+    DEFAULT_COMPONENTS, LIVE, LIVE_SERIES, MIRROR_MAX_AGE, OTHER, POCKETS,
+    RELEASE_ORDER, SEPARATE_SERIES, aggregate, aggregate_key, count_index,
+    default_cache_dir, kernel_predicate, log, merge_rows, probe_mirror,
+    snapshots,
 )
 
 
+def requested_series(asked):
+    """Split a --series request into (main tier, separate tier).
+
+    With nothing asked for that is every candidate plus every separate
+    series.  An explicit request is honoured as given, with each name routed
+    to whichever tier it belongs to -- so -s xenial aggregates xenial alone,
+    which is what it would have done anyway.
+    """
+    if not asked:
+        return list(CANDIDATE_SERIES), list(SEPARATE_SERIES)
+    return ([s for s in asked if s not in SEPARATE_SERIES],
+            [s for s in asked if s in SEPARATE_SERIES])
+
+
 def series_order(names):
-    """Release order, so the page can treat a higher index as 'more recent'."""
-    return sorted(names, key=lambda n: (CANDIDATE_SERIES.index(n)
-                                        if n in CANDIDATE_SERIES else len(CANDIDATE_SERIES),
-                                        n))
+    """Release order, so the page can treat a higher index as 'more recent'.
+
+    Anything unrecognised sorts after the known series rather than failing, so
+    a series that turns up before this list hears about it still renders.
+    """
+    return sorted(names, key=lambda n: (RELEASE_ORDER.index(n)
+                                        if n in RELEASE_ORDER
+                                        else len(RELEASE_ORDER), n))
 
 
 def add_common(parser):
@@ -148,6 +167,50 @@ def mirror_series(builder, series_list):
     return kept
 
 
+def live_totals(builder, names):
+    """Present-day totals for series the snapshot service cannot answer for.
+
+    One entry per series that could be read, with no time dimension: the
+    archive holds a single state.  A failure here costs the entry and nothing
+    else -- these sit beside the charts rather than in them, so a page without
+    them is complete, just less informative.
+    """
+    out = []
+    for name in names:
+        try:
+            cls_table, _flav, _idx, here, partial = aggregate_snapshot(
+                builder, LIVE, [name])
+        except (SkipOffline, requests.RequestException, RuntimeError) as e:
+            # RuntimeError is how an archive inconsistency arrives -- a
+            # Release listing an index neither host actually serves, or a
+            # checksum that does not match.  The time series does not depend
+            # on any of this, so none of it is worth failing a build over.
+            log("live read of %s failed (%s); leaving it out" % (name, e))
+            continue
+        if not cls_table or partial:
+            # partial means a read was skipped, and only --offline does that:
+            # there is no cache for the live archive to fall back on.
+            log("no live reading for %s%s"
+                % (name, " (--offline)" if partial else ""))
+            continue
+        row = {"name": name, "size": 0, "isize": 0, "kernelSize": 0,
+               "kernelISize": 0, "packages": 0, "kernelPackages": 0,
+               "arches": sorted({k[1] for k in cls_table})}
+        for k, acc in cls_table.items():
+            row["packages"] += acc[0]
+            row["size"] += acc[1]
+            row["isize"] += acc[2]
+            if k[4] != OTHER:
+                row["kernelPackages"] += acc[0]
+                row["kernelSize"] += acc[1]
+                row["kernelISize"] += acc[2]
+        out.append(row)
+        log("live: %s is %.1f GiB over %d arches (%.1f GiB of kernels)"
+            % (name, row["size"] / 2 ** 30, len(row["arches"]),
+               row["kernelSize"] / 2 ** 30))
+    return out
+
+
 def tally_indexes(cache, plans, is_kernel, into):
     """Size and entry count of every index behind one snapshot.
 
@@ -175,7 +238,80 @@ def tally_indexes(cache, plans, is_kernel, into):
             acc[3] += ix.usize
 
 
-def collect(builder, snaps, series_list, progress=True):
+def aggregate_snapshot(builder, snap, series_list):
+    """Merge one snapshot's pool over series_list and aggregate it.
+
+    Returns (cls_table, flav_table, idx_table, here, partial), where `here`
+    names the series that existed at this snapshot and `partial` says a read
+    was skipped -- which makes the result unfit to cache.
+
+    Masks are bit positions in series_list, so a caller that aggregates a
+    sub-list has to shift them before mixing the result with anything else.
+    """
+    whole = {}
+    plans = []
+    here = []
+    partial = False
+    for series in series_list:
+        try:
+            rows = builder.load_rows(snap, series)
+        except SkipOffline:
+            partial = True
+            continue
+        if rows is None:
+            continue
+        here.append(series)
+        plans.append((series, builder.plan(snap, series)))
+        merge_rows(whole, rows, 1 << series_list.index(series))
+        del rows
+    if not whole:
+        return None, None, {}, here, partial
+    is_kernel = kernel_predicate(whole)
+    cls_table, flav_table = aggregate(whole, is_kernel)
+    idx_table = {}
+    tally_indexes(builder.cache, plans, is_kernel, idx_table)
+    del whole
+    return cls_table, flav_table, idx_table, here, partial
+
+
+def fold_separate(builder, snap, series, bit, byclass, byflavour, byindex):
+    """Add one separately-aggregated series into a snapshot's tables.
+
+    Its aggregate is cached under a key naming only itself, which is what
+    keeps it independent of the main tier: adding or dropping it leaves every
+    other cache entry valid.  Sound only because the series shares no pool
+    file with anything else -- see SEPARATE_SERIES.  A shared file would land
+    here as a second row rather than as a wider mask, and so be counted twice.
+
+    Returns (series found, whether the aggregate came from the cache).
+    """
+    key = aggregate_key([series], builder.components, builder.arches,
+                        builder.pockets, builder.sources)
+    cached = builder.cache.get_aggregate(snap, key)
+    if cached is not None:
+        cls_table, flav_table, idx_table, here = cached
+    else:
+        cls_table, flav_table, idx_table, here, partial = \
+            aggregate_snapshot(builder, snap, [series])
+        if cls_table and not partial:
+            builder.cache.put_aggregate(snap, key, cls_table, flav_table,
+                                        idx_table, here)
+    mask = 1 << bit
+    if cls_table:
+        for k, acc in cls_table.items():
+            # One series in, so the only mask it can carry is its own bit.
+            assert k[0] == 1, (series, k)
+            byclass[(snap, mask) + k[1:]] = acc
+        for k, acc in flav_table.items():
+            assert k[0] == 1, (series, k)
+            byflavour[(snap, mask) + k[1:]] = acc
+    # Index rows carry the series by name, so they need no shifting.
+    for k, acc in idx_table.items():
+        byindex[(snap,) + k] = acc
+    return here, cached is not None
+
+
+def collect(builder, snaps, series_list, separate=(), progress=True):
     """Aggregate each snapshot, with every series folded into one map.
 
     Series share one pool/, so a snapshot has to be aggregated whole rather
@@ -190,48 +326,50 @@ def collect(builder, snaps, series_list, progress=True):
     and the tables are a few thousand rows against the millions of packages
     behind them -- which is what makes adding one month to an existing page
     cost one snapshot's work rather than all of them.
+
+    `separate` names series aggregated on their own and folded in afterwards,
+    each under a cache key of its own.  That is only sound for a series that
+    shares no pool file with the rest, and it buys the thing the main tier
+    cannot give: adding one does not change the main key, so none of the
+    existing aggregates are invalidated.  See SEPARATE_SERIES.
     """
     byclass = {}
     byflavour = {}
     byindex = {}
     seen = []
     started = time.time()
+    # The main tier's key covers series_list alone, so the separate tier can
+    # gain or lose a series without invalidating any of it.
     key = aggregate_key(series_list, builder.components, builder.arches,
                         builder.pockets, builder.sources)
+    # series_list is a prefix of this, so every mask the main tier has already
+    # cached still means what it meant.
+    all_series = list(series_list) + [s for s in separate
+                                      if s not in series_list]
     for i, snap in enumerate(snaps, 1):
         cached = builder.cache.get_aggregate(snap, key)
         if cached is not None:
             cls_table, flav_table, idx_table, here = cached
         else:
-            whole = {}
-            plans = []
-            here = []
-            partial = False
-            for series in series_list:
-                try:
-                    rows = builder.load_rows(snap, series)
-                except SkipOffline:
-                    partial = True
-                    continue
-                if rows is None:
-                    continue
-                here.append(series)
-                plans.append((series, builder.plan(snap, series)))
-                merge_rows(whole, rows, 1 << series_list.index(series))
-                del rows
-            cls_table = flav_table = None
-            idx_table = {}
-            if whole:
-                is_kernel = kernel_predicate(whole)
-                cls_table, flav_table = aggregate(whole, is_kernel)
-                tally_indexes(builder.cache, plans, is_kernel, idx_table)
-                del whole
-                # Never cache a run that could not read everything it wanted:
-                # an --offline miss looks exactly like a series that does not
-                # exist yet, and would be indistinguishable once written down.
-                if not partial:
-                    builder.cache.put_aggregate(snap, key, cls_table,
-                                                flav_table, idx_table, here)
+            cls_table, flav_table, idx_table, here, partial = \
+                aggregate_snapshot(builder, snap, series_list)
+            # Never cache a run that could not read everything it wanted: an
+            # --offline miss looks exactly like a series that does not exist
+            # yet, and would be indistinguishable once written down.
+            if cls_table and not partial:
+                builder.cache.put_aggregate(snap, key, cls_table,
+                                            flav_table, idx_table, here)
+        all_cached = cached is not None
+        for extra in separate:
+            if extra in series_list:
+                continue
+            e_here, e_cached = fold_separate(builder, snap, extra,
+                                             all_series.index(extra),
+                                             byclass, byflavour, byindex)
+            all_cached = all_cached and e_cached
+            for name in e_here:
+                if name not in seen:
+                    seen.append(name)
         if cls_table:
             for k, acc in cls_table.items():
                 byclass[(snap,) + k] = acc
@@ -243,7 +381,7 @@ def collect(builder, snaps, series_list, progress=True):
             if series not in seen:
                 seen.append(series)
         if progress:
-            if cached is not None:
+            if all_cached:
                 log("[%d/%d] %s  aggregate from cache, %.0fs"
                     % (i, len(snaps), snap, time.time() - started))
             else:
@@ -254,7 +392,8 @@ def collect(builder, snaps, series_list, progress=True):
     return byclass, byflavour, byindex, sorted(seen)
 
 
-def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None):
+def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None,
+           live=None):
     """Pack the tables into dimension dictionaries plus flat integer rows.
 
     The series dimension is a bitmask over series_list, not an index, so the
@@ -282,7 +421,12 @@ def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None):
         used_bits |= k[1]
     for k in byindex:
         used_bits |= 1 << series_list.index(k[1])
-    kept = [s for i, s in enumerate(series_list) if used_bits >> i & 1]
+    # Release order, not series_list order: the latter is pinned by the cache
+    # key (new series get appended), which has nothing to do with where a
+    # series sits in time.  remap is built from this list, so reordering it
+    # just reassigns the output bits consistently.
+    kept = series_order(s for i, s in enumerate(series_list)
+                        if used_bits >> i & 1)
     remap = {}
     for new_i, name in enumerate(kept):
         remap[series_list.index(name)] = new_i
@@ -325,6 +469,11 @@ def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None):
         "otherClass": OTHER,
         "pockets": POCKETS,
         "mirrored": mirrored,
+        # Series the snapshot service cannot answer for, read from the live
+        # archive and reported as of now.  Deliberately not in the tables
+        # above: they have no history, and inventing one by attaching them to
+        # the newest snapshot would put a step in every total.
+        "live": {"source": ARCHIVE_BASE, "series": live} if live else None,
         "dims": {
             "snapshots": used_snaps,
             "series": kept,
@@ -425,18 +574,23 @@ def cmd_build(args):
         return 0
     builder = make_builder(args)
     snaps = snapshots(args.from_, args.to, args.every)
-    series_list = args.series or CANDIDATE_SERIES
-    log("%d snapshot(s) x %d candidate series; cache at %s"
-        % (len(snaps), len(series_list), args.cache))
+    series_list, separate = requested_series(args.series)
+    all_series = series_list + [s for s in separate if s not in series_list]
+    log("%d snapshot(s) x %d candidate series%s; cache at %s"
+        % (len(snaps), len(all_series),
+           " (%s aggregated separately)" % " ".join(separate) if separate
+           else "", args.cache))
 
-    mirrored = mirror_series(builder, series_list)
-    byclass, byflavour, byindex, seen = collect(builder, snaps, series_list)
+    mirrored = mirror_series(builder, all_series)
+    live = live_totals(builder, [] if args.series else LIVE_SERIES)
+    byclass, byflavour, byindex, seen = collect(builder, snaps, series_list,
+                                                separate=separate)
     if not byclass:
         log("nothing collected -- wrong window, or an --offline run with a "
             "cold cache")
         return 1
-    data = encode(byclass, byflavour, byindex, snaps, series_list,
-                  mirrored=mirrored)
+    data = encode(byclass, byflavour, byindex, snaps, all_series,
+                  mirrored=mirrored, live=live)
     log("collected %d class rows, %d flavour rows, %d index rows across %s"
         % (len(data["byClass"]["rows"]) // 9,
            len(data["byFlavour"]["rows"]) // 8,
@@ -463,9 +617,11 @@ def cmd_report(args):
     builder = make_builder(args)
     snaps = snapshots(args.snapshot, args.snapshot, "month") \
         if args.snapshot else snapshots(None, None, "month")[-1:]
-    series_list = args.series or CANDIDATE_SERIES
+    series_list, separate = requested_series(args.series)
     byclass, _flav, _idx, seen = collect(builder, snaps, series_list,
-                                         progress=False)
+                                         separate=separate, progress=False)
+    # Masks are bit positions in this, which is what collect folded into.
+    series_list = series_list + [s for s in separate if s not in series_list]
 
     # A row's series mask says which series reference that file.  Adding a row
     # into every series it touches gives each series its own honest total; the
@@ -647,7 +803,10 @@ def cmd_breakdown(args):
         snaps = snapshots(args.snapshot, args.snapshot, "month")
     else:
         snaps = snapshots(None, None, "month")[-1:]
-    series_list = args.series or CANDIDATE_SERIES
+    main, separate = requested_series(args.series)
+    # One list: collect_sources merges the pool itself rather than trusting
+    # the split, which is what makes it the check on SEPARATE_SERIES.
+    series_list = main + [s for s in separate if s not in main]
     match = re.compile(args.match) if args.match else None
     kernels = "include"
     if args.kernels_only:

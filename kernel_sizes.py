@@ -43,11 +43,30 @@ SNAPSHOT_EPOCH = "20230301T000000Z"
 # itself knows, so that is who gets asked.
 ARCHIVE_BASE = "https://archive.ubuntu.com/ubuntu"
 
+# The other half of the live archive.  archive.ubuntu.com carries amd64 and
+# i386 and nothing else; every other architecture is published to
+# ports.ubuntu.com under its own root.  The snapshot service hides that split
+# -- it serves every architecture under one tree -- so this only matters when
+# reading the live archive directly.  A suite's Release on archive.ubuntu.com
+# lists the ports indexes too, checksums and all, and the two hosts publish in
+# step, so one Release can plan fetches from both and the checksum settles
+# which host actually answered.
+PORTS_BASE = "https://ports.ubuntu.com/ubuntu-ports"
+
 # How long a mirror probe stays good.  Series leave the archive a handful of
 # times a year, and months after they go EOL rather than on the day, so a week
 # is fresh enough to notice a removal well inside a release cycle while
 # keeping the probe off the critical path of an ordinary rebuild.
 MIRROR_MAX_AGE = 7 * 86400
+
+# A snapshot token meaning "the live archive" rather than a point in
+# snapshot.ubuntu.com's history.  Some series the snapshot service never
+# carried at all -- trusty is absent at every stamp, in every pocket -- and the
+# only place left to read them is the archive itself, which has exactly one
+# state: now.  Nothing about it is cached: there is no stamp to make a cache
+# entry valid, and the content-addressed blobs already make an unchanged suite
+# cost only its Release files.
+LIVE = "live"
 
 # How long to keep trying when the archive is having a bad day.  The service
 # fails in bursts: whole minutes where large objects come back 502/503/504
@@ -67,6 +86,50 @@ POCKETS = ["release", "security", "updates", "proposed", "backports"]
 CANDIDATE_SERIES = [
     "bionic", "focal", "jammy", "kinetic", "lunar", "mantic", "noble",
     "oracular", "plucky", "questing", "resolute", "stonking",
+]
+
+# Series aggregated on their own and folded in afterwards, rather than merged
+# into the whole-snapshot aggregate.
+#
+# A snapshot normally has to be aggregated whole, because series share one
+# pool/: 1.1 TiB of the archive -- 10.6% of it -- is referenced by more than
+# one series, and aggregating series separately would count each of those
+# files once per series that mentions it.  "report" prints that figure.  A
+# series old enough to share nothing escapes that, and keeping it out of the
+# main aggregate is what lets it be added without changing the main cache key,
+# which is a hash of the series list.
+#
+# Empty on purpose, but kept: the mechanism is the only way to add a series
+# without invalidating every cached aggregate.  xenial qualified -- measured at
+# exactly 0 bytes of overlap against all twelve -- and was carried here until
+# reading it from the live archive showed 413.6 GiB against the 121.5 GiB the
+# snapshot service can see, so it moved to LIVE_SERIES.  Anything put here
+# needs that same zero-overlap measurement first; "breakdown" merges the pool
+# for real instead of trusting the split, so comparing its archive total
+# against the page's is the check.
+SEPARATE_SERIES = []
+
+# Series read from the live archive instead, because the snapshot service
+# cannot answer for them: trusty is absent from it at every stamp in every
+# pocket, and xenial is there only in part.  There is no history to be had --
+# the archive holds one state, now -- so these are reported beside the time
+# series rather than inside it.  Folding a series into the latest snapshot
+# alone would step the archive total up by its entire size in one interval and
+# leave a cliff in the rate view, which is precisely the artifact a trailing
+# window exists to suppress.
+LIVE_SERIES = ["trusty", "xenial"]
+
+# Every series the tool knows, in release order.  Deliberately a separate list
+# from the two above: their order is load-bearing for the cache, since the
+# aggregate key is a hash of the series list and a mask is a bit position in
+# it, so a new series has to be *appended* to keep cached masks meaning what
+# they meant.  Where a series belongs chronologically is a different question,
+# and this is where it is answered -- for chip order on the page, and for
+# "newest" when there are more series than colours.
+RELEASE_ORDER = [
+    "trusty", "xenial", "bionic", "focal", "jammy", "kinetic", "lunar",
+    "mantic", "noble", "oracular", "plucky", "questing", "resolute",
+    "stonking",
 ]
 
 DEFAULT_COMPONENTS = ["main", "restricted", "universe", "multiverse"]
@@ -774,6 +837,13 @@ def snapshots(from_spec, to_spec, every):
     return out
 
 
+def dists_url(snapshot, suite, path):
+    """Where to read one file of a suite's dists/ tree."""
+    if snapshot == LIVE:
+        return "%s/dists/%s/%s" % (ARCHIVE_BASE, suite, path)
+    return "%s/%s/dists/%s/%s" % (SNAPSHOT_BASE, snapshot, suite, path)
+
+
 def suite_name(series, pocket):
     return series if pocket == "release" else "%s-%s" % (series, pocket)
 
@@ -826,14 +896,21 @@ class Builder:
         return bool(entries) and not any(k[0] != "_" for k in entries)
 
     def release(self, snapshot, suite):
-        """Cached {path: sha256} for a suite, fetching the Release if needed."""
-        cached = self.cache.get_release(snapshot, suite)
+        """Cached {path: sha256} for a suite, fetching the Release if needed.
+
+        The live archive is never cached: a snapshot stamp names a state that
+        cannot change, which is what makes an entry valid forever, and "now"
+        has no such guarantee.
+        """
+        live = snapshot == LIVE
+        cached = None if live else self.cache.get_release(snapshot, suite)
         if cached is not None and not self._stale(cached):
             return cached
-        url = "%s/%s/dists/%s/Release" % (SNAPSHOT_BASE, snapshot, suite)
+        url = dists_url(snapshot, suite, "Release")
         body = self.fetcher.get(url)
         if body is None:
-            self.cache.put_release(snapshot, suite, {})
+            if not live:
+                self.cache.put_release(snapshot, suite, {})
             return {}
         entries, arches, components, algo = parse_release(body)
         if not entries:
@@ -843,14 +920,18 @@ class Builder:
         entries["_arches"] = (" ".join(arches), 0)
         entries["_components"] = (" ".join(components), 0)
         entries["_algo"] = (algo, 0)
-        self.cache.put_release(snapshot, suite, entries)
+        if not live:
+            self.cache.put_release(snapshot, suite, entries)
         return entries
 
     def _ensure_blob(self, snapshot, suite, path, sha, algo):
         if self.cache.have_blob(sha):
             return
-        url = "%s/%s/dists/%s/%s" % (SNAPSHOT_BASE, snapshot, suite, path)
+        url = dists_url(snapshot, suite, path)
         body = self.fetcher.get(url)
+        if body is None and snapshot == LIVE:
+            url = "%s/dists/%s/%s" % (PORTS_BASE, suite, path)
+            body = self.fetcher.get(url)
         if body is None:
             raise RuntimeError("Release lists %s but it is missing" % url)
         got = hashlib.new(algo, body).hexdigest()
