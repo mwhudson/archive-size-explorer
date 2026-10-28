@@ -128,6 +128,7 @@ button.plain:hover { color: var(--text-primary); }
   gap: 10px;
 }
 button.plain.zoom { font-size: 11px; padding: 2px 8px; flex: none; }
+button.plain.summary { font-size: 12.5px; text-align: left; }
 .card .cardsub { color: var(--text-secondary); font-size: 12.5px; margin-bottom: 12px; }
 .chartbox { width: 100%; overflow-x: auto; }
 svg { display: block; }
@@ -174,6 +175,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   <h1>Kernels in the Ubuntu archive</h1>
   <div class="sub" id="generated"></div>
   <div class="spacer"></div>
+  <button class="plain" id="filterbtn" type="button" aria-expanded="true"
+          aria-controls="filters">Hide filters</button>
   <button class="plain" id="resetbtn" type="button">Reset</button>
   <button class="plain" id="themebtn" type="button">Theme</button>
 </header>
@@ -518,6 +521,7 @@ const DEFAULTS = {
   shown: "total",
   rateWindow: 3,
   snap: D.snapshots.length - 1,
+  filters: true,
 };
 
 /** Refill a selection in place; the chip handlers close over the Set itself. */
@@ -538,6 +542,7 @@ const state = {
   view: "time",
   snap: DEFAULTS.snap,
   zoom: null,
+  filters: DEFAULTS.filters,
 };
 
 /* ----------------------------------------------------------- shareable URL */
@@ -593,6 +598,7 @@ function encodeState() {
   if (state.rateWindow !== DEFAULTS.rateWindow) set("w", state.rateWindow);
   if (state.snap !== DEFAULTS.snap) set("n", D.snapshots[state.snap]);
   if (state.zoom) set("z", state.zoom);
+  if (!state.filters) set("f", "0");
   return out.join("&");
 }
 
@@ -624,6 +630,7 @@ function applyHash(hash) {
     if (i >= 0) state.snap = i;
   }
   if (got.has("z")) state.zoom = got.get("z");
+  if (got.has("f")) state.filters = got.get("f") !== "0";
 }
 
 /** Reflect state in the address bar.
@@ -643,8 +650,14 @@ function syncHash() {
   writingHash = false;
 }
 
-/** Every filter and control back to what the page opened with.  Which tab you
-    are on is navigation rather than a filter, so it is left where it is. */
+/** Every filter and control back to what the page opened with.
+ *
+ *  Which tab you are on is navigation rather than a filter, so it is left
+ *  where it is -- and for the same reason so are the focused chart and
+ *  whether the filter rows are folded.  Those three have DEFAULTS entries all
+ *  the same, because that is where the page's opening state is written down;
+ *  they are just not what Reset is for.
+ */
 function resetDefaults() {
   setTo(state.series, DEFAULTS.series);
   setTo(state.arch, DEFAULTS.arch);
@@ -1248,9 +1261,55 @@ function pickRow(label, choices, field) {
   return row;
 }
 
+/** One line describing the filters, for when the rows are folded away.
+ *
+ *  Worth the space: a folded filter row would otherwise leave every chart
+ *  below it unexplained, and "6 of 10 architectures" is exactly the sort of
+ *  thing you forget you set.
+ */
+function filterSummary() {
+  const dim = (sel, names, label) =>
+    (sel.size === names.length ? "all " + names.length
+                               : sel.size + " of " + names.length) + " " + label;
+  const bits = [
+    dim(state.series, D.series, "series"),
+    dim(state.arch, D.arches, "architectures"),
+    dim(state.pocket, DATA.pockets, "pockets"),
+    dim(state.comp, D.components, "components"),
+  ];
+  if (state.metric !== DEFAULTS.metric) bits.push("installed size");
+  if (state.splitBy !== DEFAULTS.splitBy) bits.push("a line per architecture");
+  if (state.shown === "log") bits.push("log scale");
+  if (state.shown === "rate") {
+    bits.push("rate over " + state.rateWindow +
+              (state.rateWindow === 1 ? " month" : " months"));
+  }
+  return bits.join(" \u00b7 ");
+}
+
 function buildFilters() {
   const host = document.getElementById("filters");
   host.innerHTML = "";
+  const btn = document.getElementById("filterbtn");
+  btn.textContent = state.filters ? "Hide filters" : "Show filters";
+  btn.setAttribute("aria-expanded", state.filters ? "true" : "false");
+  if (!state.filters) {
+    const row = document.createElement("div");
+    row.className = "frow";
+    const name = document.createElement("div");
+    name.className = "flabel";
+    name.textContent = "Filters";
+    row.appendChild(name);
+    const b = document.createElement("button");
+    b.className = "plain summary";
+    b.type = "button";
+    b.textContent = filterSummary();
+    b.title = "bring the filters back";
+    b.addEventListener("click", () => { state.filters = true; render(); });
+    row.appendChild(b);
+    host.appendChild(row);
+    return;
+  }
   host.appendChild(chipRow("Series", D.series, state.series, toggler(state.series),
                            i => seriesSwatch(i),
                            [["select default",
@@ -2151,6 +2210,11 @@ if (!DATA.byIndex) {
 
 document.querySelectorAll(".tab").forEach(t =>
   t.addEventListener("click", () => { state.view = t.dataset.view; render(); }));
+
+document.getElementById("filterbtn").addEventListener("click", () => {
+  state.filters = !state.filters;
+  render();
+});
 
 document.getElementById("resetbtn").addEventListener("click", () => {
   resetDefaults();

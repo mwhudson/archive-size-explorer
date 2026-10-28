@@ -114,21 +114,23 @@ oldest frozen series rather than the one under development. Four dash patterns
 against eight hues is 32 distinct pairs, and past that they genuinely repeat —
 the page says so and points at the table.
 
-Every chart has a **focus** button that hides the others on its tab and draws
-that one larger. The snapshot chooser stays put when you do, since the charts
-beside it depend on it.
+**Hide filters** folds the filter rows away and leaves one line in their place
+saying what is selected, because a folded filter row would otherwise leave
+every chart below it unexplained. Every chart has a **focus** button that hides
+the others on its tab and draws that one larger. The snapshot chooser stays put
+when you do, since the charts beside it depend on it.
 
 The address bar follows the page, so a link carries the filters, the tab, the
 chosen snapshot and whichever chart is focused. Only what differs from the
 defaults is written, which leaves an untouched page with a clean URL and makes
 a shared link read as a list of what the sender changed —
-`#v=archive&s=trusty,xenial&d=log` is the archive tab, two series, log scale.
-It goes in the hash rather than a query string so that a page opened over
-`file://` carries it too, and it is written with names and snapshot stamps
-rather than indices so that a link still means the same thing after the next
-rebuild. A key the page no longer recognises is ignored instead of fatal, and a
-focus key naming no chart on the tab is dropped rather than left showing an
-empty page.
+`#v=archive&s=trusty,xenial&d=log&f=0` is the archive tab, two series, log
+scale, filters folded. It goes in the hash rather than a query string so that a
+page opened over `file://` carries it too, and it is written with names and
+snapshot stamps rather than indices so that a link still means the same thing
+after the next rebuild. A key the page no longer recognises is ignored instead
+of fatal, and a focus key naming no chart on the tab is dropped rather than
+left showing an empty page.
 
 There are three things it will tell you: how much of the archive is kernels,
 how big the archive is, and how big the package lists are. The **Whole archive**
