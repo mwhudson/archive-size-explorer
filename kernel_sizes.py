@@ -20,6 +20,7 @@ import gzip
 import hashlib
 import lzma
 import os
+import random
 import re
 import sys
 import threading
@@ -33,6 +34,16 @@ SNAPSHOT_BASE = "https://snapshot.ubuntu.com/ubuntu"
 
 # The snapshot service only goes back this far (see https://snapshot.ubuntu.com/).
 SNAPSHOT_EPOCH = "20230301T000000Z"
+
+# How long to keep trying when the archive is having a bad day.  The service
+# fails in bursts: whole minutes where large objects come back 502/503/504
+# while small ones serve fine, then an uneven recovery where individual suites
+# lag behind the rest.  A build makes tens of thousands of requests, so at four
+# tries over twelve seconds one unlucky index was enough to kill a run that was
+# otherwise perfectly resumable.  Eight tries reach a couple of minutes of
+# patience, which is the scale these wobbles actually last.
+HTTP_ATTEMPTS = 8
+HTTP_BACKOFF_CAP = 60.0
 
 POCKETS = ["release", "security", "updates", "proposed", "backports"]
 
@@ -210,20 +221,45 @@ class Fetcher:
             self.local.session = s
         return s
 
+    def _backoff(self, attempt, response=None):
+        """Wait before retrying: exponential, jittered, capped.
+
+        The jitter matters more than the growth.  Every worker thread meets the
+        same outage at the same moment, so without it they all come back in
+        lockstep and land on whatever is struggling together; spreading them
+        over half to one and a half of the nominal delay decorrelates them.
+
+        A server that bothers to say Retry-After knows better than we do, so
+        take it when it asks for longer -- but still under the cap, since a
+        wildly large value would stall the build rather than pace it.
+        """
+        delay = min(2.0 * 2 ** attempt, HTTP_BACKOFF_CAP)
+        if response is not None:
+            try:
+                delay = max(delay, min(float(response.headers["Retry-After"]),
+                                       HTTP_BACKOFF_CAP))
+            except (KeyError, TypeError, ValueError):
+                pass       # absent, or an HTTP-date we are not going to parse
+        time.sleep(delay * (0.5 + random.random()))
+
     def get(self, url, tolerate_404=True):
-        for attempt in range(4):
+        last = HTTP_ATTEMPTS - 1
+        for attempt in range(HTTP_ATTEMPTS):
             try:
                 r = self.session.get(url, timeout=180)
             except requests.RequestException as e:
-                if attempt == 3:
+                if attempt == last:
                     raise
                 log("  retrying %s after %s" % (url, e))
-                time.sleep(2 * (attempt + 1))
+                self._backoff(attempt)
                 continue
             if r.status_code == 404 and tolerate_404:
                 return None
-            if r.status_code >= 500 and attempt < 3:
-                time.sleep(2 * (attempt + 1))
+            if r.status_code >= 500 and attempt < last:
+                # Say so: an outage used to look like a stall in the log, right
+                # up until the traceback.
+                log("  retrying %s after HTTP %d" % (url, r.status_code))
+                self._backoff(attempt, r)
                 continue
             r.raise_for_status()
             with self.lock:
