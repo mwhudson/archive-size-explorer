@@ -85,6 +85,7 @@ button.plain:hover { color: var(--text-primary); }
 }
 .tile .label { color: var(--text-secondary); font-size: 12px; letter-spacing: 0.02em; }
 .tile .value { font-size: 28px; font-weight: 620; margin-top: 2px; letter-spacing: -0.02em; }
+.tile.primary .value { font-size: 34px; }
 .tile .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
 
 .filters {
@@ -173,6 +174,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 </header>
 
 <div class="tiles">
+  <!-- The total comes first and reads largest: it is the denominator for
+       everything else on the page, and the selection it covers is not
+       always the whole archive, so the note has to say what went into it. -->
+  <div class="tile primary">
+    <div class="label">TOTAL SIZE</div>
+    <div class="value" id="tile-total">–</div>
+    <div class="note" id="tile-total-note"></div>
+  </div>
   <div class="tile">
     <div class="label">KERNEL PACKAGES</div>
     <div class="value" id="tile-kernel">–</div>
@@ -1913,7 +1922,7 @@ function note(host, text) {
 function updateTiles() {
   const cur = snapshotTotals(state.snap);
   const archive = state.series.size === D.series.length;
-  const scope = archive ? "whole archive" : "selected";
+  const scope = archive ? "whole archive" : "selected series";
   document.getElementById("tile-kernel").textContent = bytes(cur.kernel);
   document.getElementById("tile-kernel-note").textContent =
     count(cur.kn) + " packages at " + stamp(D.snapshots[state.snap]);
@@ -1924,9 +1933,13 @@ function updateTiles() {
     count(cur.n - cur.kn) + " packages";
   document.getElementById("tile-share").textContent =
     cur.total ? pct(cur.kernel / cur.total) : "-";
-  document.getElementById("tile-share-note").textContent =
-    "of " + bytes(cur.total) + " " + scope;
-
+  document.getElementById("tile-total").textContent = bytes(cur.total);
+  document.getElementById("tile-total-note").textContent =
+    (archive ? "all " + D.series.length : state.series.size + " of " +
+     D.series.length) + " series at " + stamp(D.snapshots[state.snap]);
+  // The total has a tile of its own now, so repeating it here would just be
+  // noise; what the share still needs is what it is a share *of*.
+  document.getElementById("tile-share-note").textContent = "of the " + scope;
 }
 
 function render() {
