@@ -122,7 +122,12 @@ button.plain:hover { color: var(--text-primary); }
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 12px; padding: 18px 20px 14px; margin-bottom: 18px;
 }
-.card h2 { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
+.card h2 {
+  font-size: 14px; font-weight: 600; margin: 0 0 2px;
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 10px;
+}
+button.plain.zoom { font-size: 11px; padding: 2px 8px; flex: none; }
 .card .cardsub { color: var(--text-secondary); font-size: 12.5px; margin-bottom: 12px; }
 .chartbox { width: 100%; overflow-x: auto; }
 svg { display: block; }
@@ -532,7 +537,111 @@ const state = {
   rateWindow: DEFAULTS.rateWindow,
   view: "time",
   snap: DEFAULTS.snap,
+  zoom: null,
 };
+
+/* ----------------------------------------------------------- shareable URL */
+
+// State goes in the location hash, not a query string, because a page opened
+// over file:// has to carry it too.  Only what differs from the defaults is
+// written, so an untouched page keeps a clean URL and a shared link reads as
+// a list of what the sender actually changed.
+//
+// Names and snapshot stamps rather than indices, deliberately: a link should
+// still mean the same thing after the next rebuild, which appends snapshots
+// and may add a series, and an index would quietly come to mean its
+// neighbour.  Anything unrecognised is ignored rather than fatal, so an old
+// link degrades to the default instead of a blank page.
+
+let zoomFound = false;
+let writingHash = false;
+
+function setNames(sel, names) {
+  return [...sel].sort((a, b) => a - b).map(i => names[i]).join(",");
+}
+
+function namesToSet(text, names) {
+  const out = new Set();
+  for (const n of text.split(",")) {
+    const i = names.indexOf(n);
+    if (i >= 0) out.add(i);
+  }
+  return out;
+}
+
+function sameSet(a, b) {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
+function encodeState() {
+  const out = [];
+  const set = (k, v) => out.push(k + "=" + v);
+  if (state.view !== "time") set("v", state.view);
+  if (!sameSet(state.series, DEFAULTS.series))
+    set("s", setNames(state.series, D.series));
+  if (!sameSet(state.arch, DEFAULTS.arch))
+    set("a", setNames(state.arch, D.arches));
+  if (!sameSet(state.pocket, DEFAULTS.pocket))
+    set("p", setNames(state.pocket, DATA.pockets));
+  if (!sameSet(state.comp, DEFAULTS.comp))
+    set("c", setNames(state.comp, D.components));
+  if (state.metric !== DEFAULTS.metric) set("m", state.metric);
+  if (state.splitBy !== DEFAULTS.splitBy) set("l", state.splitBy);
+  if (state.shown !== DEFAULTS.shown) set("d", state.shown);
+  if (state.rateWindow !== DEFAULTS.rateWindow) set("w", state.rateWindow);
+  if (state.snap !== DEFAULTS.snap) set("n", D.snapshots[state.snap]);
+  if (state.zoom) set("z", state.zoom);
+  return out.join("&");
+}
+
+/** Put the hash into state.  Absent keys mean the default, so the caller
+    resets first and this only overrides. */
+function applyHash(hash) {
+  const text = String(hash || "").replace(/^#/, "");
+  if (!text) return;
+  const got = new Map();
+  for (const part of text.split("&")) {
+    const i = part.indexOf("=");
+    if (i > 0) got.set(part.slice(0, i), decodeURIComponent(part.slice(i + 1)));
+  }
+  const views = ["time", "breakdown", "table", "archive", "lists"];
+  if (views.includes(got.get("v"))) state.view = got.get("v");
+  if (got.has("s")) setTo(state.series, namesToSet(got.get("s"), D.series));
+  if (got.has("a")) setTo(state.arch, namesToSet(got.get("a"), D.arches));
+  if (got.has("p")) setTo(state.pocket, namesToSet(got.get("p"), DATA.pockets));
+  if (got.has("c")) setTo(state.comp, namesToSet(got.get("c"), D.components));
+  if (["size", "isize"].includes(got.get("m"))) state.metric = got.get("m");
+  if (["series", "arch"].includes(got.get("l"))) state.splitBy = got.get("l");
+  if (["total", "log", "rate"].includes(got.get("d"))) state.shown = got.get("d");
+  if (got.has("w")) {
+    const w = Number(got.get("w"));
+    if ([1, 3, 6].includes(w)) state.rateWindow = w;
+  }
+  if (got.has("n")) {
+    const i = D.snapshots.indexOf(got.get("n"));
+    if (i >= 0) state.snap = i;
+  }
+  if (got.has("z")) state.zoom = got.get("z");
+}
+
+/** Reflect state in the address bar.
+ *
+ *  replaceState keeps a click out of the back history, but some browsers
+ *  refuse it on a file:// document, so fall back to assigning the hash --
+ *  which works there, at the cost of a history entry per change.
+ */
+function syncHash() {
+  const text = encodeState();
+  writingHash = true;
+  try {
+    history.replaceState(null, "", text ? "#" + text : location.pathname);
+  } catch (e) {
+    if (location.hash.replace(/^#/, "") !== text) location.hash = text;
+  }
+  writingHash = false;
+}
 
 /** Every filter and control back to what the page opened with.  Which tab you
     are on is navigation rather than a filter, so it is left where it is. */
@@ -898,7 +1007,7 @@ function hideTip() { tooltip.style.opacity = "0"; }
 
 function lineChart(host, opts) {
   const width = Math.max(560, host.clientWidth || 900);
-  const height = opts.height || 300;
+  const height = Math.round((opts.height || 300) * (state.zoom ? 1.9 : 1));
   const pad = { top: 12, right: 96, bottom: 30, left: 62 };
   const plotW = width - pad.left - pad.right;
   const plotH = height - pad.top - pad.bottom;
@@ -1025,7 +1134,7 @@ function barChart(host, opts) {
   const items = opts.items;
   if (!items.length) { host.innerHTML = '<div class="empty">Nothing selected.</div>'; return; }
   const width = Math.max(520, host.clientWidth || 900);
-  const rowH = 26, gap = 2;
+  const rowH = state.zoom ? 34 : 26, gap = 2;
   const pad = { top: 8, right: 120, bottom: 24, left: opts.labelWidth || 150 };
   const height = pad.top + items.length * rowH + pad.bottom;
   const plotW = width - pad.left - pad.right;
@@ -1226,7 +1335,7 @@ function viewTime(host, tl) {
 
   const shareCard = card(host, "Kernel share, per " + tl.split.label,
     "Kernel bytes as a percentage of everything selected, one line per " +
-    tl.split.label + ", at each snapshot.");
+    tl.split.label + ", at each snapshot.", "share-by-split");
   lineChart(shareCard, {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
@@ -1245,7 +1354,7 @@ function viewTime(host, tl) {
   const absLines = splitLines(tl, c => c.kernel);
   const absCard = card(host, "Kernel bytes, per " + tl.split.label,
     "The same selection in absolute terms, so a rising share can be told apart " +
-    "from a shrinking archive.");
+    "from a shrinking archive.", "bytes-by-split");
   lineChart(absCard, {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
@@ -1290,7 +1399,7 @@ function drawBreakdown(host) {
   const archCard = card(host, "Kernel share by architecture",
     "Solid bar: kernel packages. Faint bar behind it: everything published for " +
     "that architecture. 'all' and 'source' are rows of their own because the " +
-    "archive keeps one copy of each, not one per architecture.");
+    "archive keeps one copy of each, not one per architecture.", "share-by-arch");
   barChart(archCard, {
     labelWidth: 92,
     items: [...byArch.entries()]
@@ -1312,7 +1421,7 @@ function drawBreakdown(host) {
 
   const clsCard = card(host, "Where the kernel bytes go",
     "Kernel packages by kind. 'objects' is linux-objects-* from " +
-    "linux-restricted-modules, the pre-built third-party drivers.");
+    "linux-restricted-modules, the pre-built third-party drivers.", "kernel-bytes-where");
   barChart(clsCard, {
     labelWidth: 130,
     items: [...byClass.entries()].sort((a, b) => b[1].v - a[1].v)
@@ -1325,7 +1434,7 @@ function drawBreakdown(host) {
 
   const flavCard = card(host, "By kernel flavour",
     "Sources collapsed to the kernel they belong to, so linux-signed-aws and " +
-    "linux-restricted-modules-aws count towards linux-aws.");
+    "linux-restricted-modules-aws count towards linux-aws.", "by-flavour");
   barChart(flavCard, {
     labelWidth: 190,
     items: [...byFlav.entries()].sort((a, b) => b[1].v - a[1].v)
@@ -1341,7 +1450,7 @@ function viewTable(host, tl) {
   const sp = tl.split;
   const c = card(host, "Kernel share over time",
     "Every selected " + sp.label + ", including any the charts could not " +
-    "colour. The last column counts each file once across the whole selection.");
+    "colour. The last column counts each file once across the whole selection.", "share-table");
   const wrap = document.createElement("div");
   wrap.className = "tablewrap";
   const sel = [...sp.sel].sort((a, b) => a - b);
@@ -1364,7 +1473,8 @@ function viewTable(host, tl) {
   c.appendChild(wrap);
 
   const c2 = card(host, "One snapshot in full",
-    "The bytes behind the breakdown charts, at " + stamp(D.snapshots[state.snap]) + ".");
+    "The bytes behind the breakdown charts, at " +
+    stamp(D.snapshots[state.snap]) + ".", "snapshot-table");
   const rows = new Map();
   scanClass((s, smask, arch, cls, n, v) => {
     if (s !== state.snap) return;
@@ -1408,7 +1518,7 @@ function viewTable(host, tl) {
 
 /** A range input over the snapshots that survives its own redraws. */
 function snapshotChooser(host, redraw) {
-  const chooser = card(host, "Snapshot", "");
+  const chooser = card(host, "Snapshot", "", ALWAYS);
   const row = document.createElement("div");
   row.className = "slider-row";
   const range = document.createElement("input");
@@ -1455,7 +1565,7 @@ function viewArchive(host) {
     (all ? "Every package published across all " + D.series.length + " series"
          : "Every package published across the " + state.series.size +
            " selected series") +
-    ", with each file in pool/ counted once however many of them reference it.");
+    ", with each file in pool/ counted once however many of them reference it.", "archive-size");
   lineChart(sizeCard, {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
@@ -1486,7 +1596,7 @@ function viewArchive(host) {
       ? "One line per architecture. 'all' and 'source' are lines of their own: " +
         "the archive keeps one copy of each, not one per architecture."
       : "One line per series. A file two series share is counted in both, so " +
-        "these add up to more than the line above.");
+        "these add up to more than the line above.", "archive-size-by-split");
   const sizeLines = splitLines(tl, c => c.total);
   lineChart(splitCard, {
     x: xs,
@@ -1500,7 +1610,7 @@ function viewArchive(host) {
   liveNote(splitCard);
 
   const shareCard = card(host, "Kernel share of the whole archive",
-    "The two lines from the first chart as a ratio.");
+    "The two lines from the first chart as a ratio.", "archive-share");
   lineChart(shareCard, {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
@@ -1525,7 +1635,7 @@ function viewArchive(host) {
       if (cls !== OTHER) { a.kernel += v; a.n += n; }
     });
     const c = card(body, "The archive by architecture",
-      "At " + stamp(D.snapshots[state.snap]) + ". Solid bar: kernel packages.");
+      "At " + stamp(D.snapshots[state.snap]) + ". Solid bar: kernel packages.", "archive-by-arch");
     barChart(c, {
       labelWidth: 92,
       items: [...byArch.entries()].sort((a, b) => b[1].total - a[1].total)
@@ -1584,7 +1694,7 @@ function viewLists(host) {
     "The indexes themselves rather than the packages they point at: what apt " +
     "fetches on 'apt update'. Compressed is the .xz the archive publishes, " +
     "which is the copy this tool downloads; mirrors serve a .gz of every list " +
-    "as well, so a mirror carries rather more than this.");
+    "as well, so a mirror carries rather more than this.", "lists-size");
   lineChart(sizeCard, {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
@@ -1612,7 +1722,7 @@ function viewLists(host) {
   const splitCard = card(host, "Package lists, per " + il.split.label,
     "Compressed size, one line per " + il.split.label + ". Nothing is shared " +
     "between the lines: every index belongs to exactly one series and one " +
-    "architecture, so unlike the other tabs these do add up to the total.");
+    "architecture, so unlike the other tabs these do add up to the total.", "lists-by-split");
   const sizeLines = splitLines(il, c => c.csize);
   lineChart(splitCard, {
     x: xs,
@@ -1635,7 +1745,7 @@ function viewLists(host) {
   const pocketCard = card(host, "Package lists, per pocket",
     "Compressed size. The release pocket is most of the length of the lists " +
     "and almost none of the kernels in them: it is frozen on release day, so " +
-    "every ABI published since lands in -updates and -security instead.");
+    "every ABI published since lands in -updates and -security instead.", "lists-by-pocket");
   const pocketSize = splitLines(byPocket, c => c.csize);
   lineChart(pocketCard, {
     x: xs,
@@ -1648,7 +1758,7 @@ function viewLists(host) {
 
   const compCard = card(host, "Package lists, per component",
     "Compressed size. universe is most of what makes the lists long, and " +
-    "almost none of what makes them kernels.");
+    "almost none of what makes them kernels.", "lists-by-component");
   const compSize = splitLines(byComp, c => c.csize);
   lineChart(compCard, {
     x: xs,
@@ -1666,7 +1776,7 @@ function viewLists(host) {
     "every pocket is many more lines than there are colours, so this one " +
     "wants filtering: narrow to a series or two and it shows how a " +
     "release's lists divide between the pocket frozen on release day and " +
-    "the ones that grow afterwards.");
+    "the ones that grow afterwards.", "lists-by-suite");
   const suiteSize = splitLines(bySuite, c => c.csize);
   lineChart(suiteCard, {
     x: xs,
@@ -1682,7 +1792,7 @@ function viewLists(host) {
     "the pool stores them: a package published to both -updates and -security " +
     "is two entries, and an Architecture: all package is one entry under every " +
     "architecture. That is what makes a list long to parse, and it is not how " +
-    "the other tabs count packages.");
+    "the other tabs count packages.", "lists-entries");
   lineChart(entCard, {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
@@ -1699,7 +1809,7 @@ function viewLists(host) {
   const shareCard = card(host, "How much of the lists is kernels",
     "Kernel entries as a share of all entries, against the kernel share of " +
     "the archive's bytes for comparison. Kernel packages are few and enormous, " +
-    "so the two answers to 'how much of this is kernels' are nothing alike.");
+    "so the two answers to 'how much of this is kernels' are nothing alike.", "lists-share");
   lineChart(shareCard, {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
@@ -1723,7 +1833,7 @@ function viewLists(host) {
 
   const pocketShareCard = card(host, "Kernel share of the lists, per pocket",
     "The same ratio within each pocket's own indexes. Untick release in the " +
-    "filter above and the overall figure jumps to meet these.");
+    "filter above and the overall figure jumps to meet these.", "lists-share-by-pocket");
   const pocketShare = splitLines(byPocket, kshare);
   lineChart(pocketShareCard, {
     x: xs,
@@ -1742,7 +1852,7 @@ function viewLists(host) {
   const compShareCard = card(host, "Kernel share of the lists, per component",
     "restricted is where linux-restricted-modules and its linux-objects-* " +
     "live, which is why it is the most kernel-dense component even though " +
-    "main carries the kernels themselves.");
+    "main carries the kernels themselves.", "lists-share-by-component");
   const compShare = splitLines(byComp, kshare);
   lineChart(compShareCard, {
     x: xs,
@@ -1769,7 +1879,7 @@ function viewLists(host) {
     const ac = card(body, "The lists by architecture",
       "At " + stamp(D.snapshots[state.snap]) + ". Solid bar: kernel entries. " +
       "'source' is the Sources indexes; there is no 'all' row because " +
-      "Architecture: all packages are listed under each real architecture.");
+      "Architecture: all packages are listed under each real architecture.", "lists-by-arch");
     barChart(ac, {
       labelWidth: 92,
       items: [...byArch.entries()].sort((a, b) => b[1].n - a[1].n)
@@ -1812,11 +1922,35 @@ function viewLists(host) {
 
 /* ------------------------------------------------------------ card helpers */
 
-function card(host, title, sub) {
+// A card that stays put when one chart is focused, and is never itself a
+// focus target: the snapshot chooser is a control the charts beside it depend
+// on, so hiding it would strand whoever focused one of them.
+const ALWAYS = "always";
+
+function card(host, title, sub, key) {
   const c = document.createElement("div");
   c.className = "card";
   const h = document.createElement("h2");
-  h.textContent = title;
+  const name = document.createElement("span");
+  name.textContent = title;
+  h.appendChild(name);
+  // A card with a key can be focused: the others are still built, but never
+  // attached, so no view needs to know this is happening.
+  if (key && key !== ALWAYS) {
+    const z = document.createElement("button");
+    z.className = "plain zoom";
+    z.type = "button";
+    z.textContent = state.zoom === key ? "show all" : "focus";
+    z.title = state.zoom === key
+      ? "bring back the other charts on this tab"
+      : "hide the other charts and draw this one larger";
+    z.setAttribute("aria-pressed", state.zoom === key ? "true" : "false");
+    z.addEventListener("click", () => {
+      state.zoom = state.zoom === key ? null : key;
+      render();
+    });
+    h.appendChild(z);
+  }
   c.appendChild(h);
   if (sub) {
     const s = document.createElement("div");
@@ -1827,7 +1961,10 @@ function card(host, title, sub) {
   const body = document.createElement("div");
   body.className = "chartbox";
   c.appendChild(body);
-  host.appendChild(c);
+  if (key === ALWAYS || !state.zoom || state.zoom === key) {
+    host.appendChild(c);
+    if (key && state.zoom === key) zoomFound = true;
+  }
   return body;
 }
 
@@ -1955,9 +2092,11 @@ function render() {
 
   const host = document.getElementById("views");
   host.innerHTML = "";
+  zoomFound = false;
   if (!state.series.size || !state.arch.size || !state.pocket.size || !state.comp.size) {
     host.innerHTML = '<div class="card"><div class="empty">' +
       "Select at least one of each filter.</div></div>";
+    syncHash();
     return;
   }
   if (state.shown !== "total" && state.view !== "breakdown" &&
@@ -1990,6 +2129,17 @@ function render() {
   else if (state.view === "breakdown") viewBreakdown(host);
   else if (state.view === "time") viewTime(host, timeline());
   else viewTable(host, timeline());
+
+  // A focus key out of a link may name no card on this tab -- another tab's
+  // chart, or one that has since been renamed.  Drop it and draw the lot
+  // rather than show an empty tab; clearing it first means this cannot
+  // recurse past one retry.
+  if (state.zoom && !zoomFound) {
+    state.zoom = null;
+    render();
+    return;
+  }
+  syncHash();
 }
 
 // --from-json can replay a dataset built before the index table existed.
@@ -2040,6 +2190,19 @@ window.addEventListener("resize", () => {
   resizeTimer = setTimeout(render, 120);
 });
 
+// Someone editing the hash, following a link into the same page, or using the
+// back button after a file:// fallback write.  The hash is the whole state,
+// so start from the defaults and let it override.
+window.addEventListener("hashchange", () => {
+  if (writingHash) return;
+  resetDefaults();
+  state.view = "time";
+  state.zoom = null;
+  applyHash(location.hash);
+  render();
+});
+
+applyHash(location.hash);
 render();
 })();
 </script>
