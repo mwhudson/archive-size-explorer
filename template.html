@@ -335,6 +335,41 @@ const archSlots = new Slots();
 // nothing is ever dropped for want of a colour.
 const pocketSlots = new Slots();
 const compSlots = new Slots();
+// Suite -- a series and a pocket together, the thing a sources.list line names
+// and a Release file describes.  An index file belongs to exactly one, so it
+// splits as cleanly as pocket and component do.  The two are packed into one
+// number because splitLines() wants a flat key.
+const suiteSlots = new Slots();
+const NPOCK = DATA.pockets.length;
+const RELEASE_POCKET = DATA.pockets.indexOf("release");
+const SUITE_NAMES = [];
+for (let ser = 0; ser < D.series.length; ser++) {
+  for (let po = 0; po < NPOCK; po++) {
+    SUITE_NAMES[ser * NPOCK + po] = D.series[ser] +
+      (po === RELEASE_POCKET ? "" : "-" + DATA.pockets[po]);
+  }
+}
+// Only the suites the archive actually publishes.  Every series crossed with
+// every pocket would offer combinations that have never existed, and an empty
+// line still costs one of the few colours.
+const SUITES_PRESENT = (function () {
+  const seen = new Set(), rows = DATA.byIndex.rows;
+  for (let i = 0; i < rows.length; i += 9) {
+    seen.add(rows[i + 1] * NPOCK + rows[i + 4]);
+  }
+  return seen;
+})();
+
+function suiteSel() {
+  const out = new Set();
+  for (const ser of state.series) {
+    for (const po of state.pocket) {
+      const k = ser * NPOCK + po;
+      if (SUITES_PRESENT.has(k)) out.add(k);
+    }
+  }
+  return out;
+}
 const seriesColour = k => seriesSlots.colour(k);
 const archColour = k => archSlots.colour(k);
 
@@ -343,6 +378,7 @@ function assignSlots() {
   archSlots.assign(state.arch);
   pocketSlots.assign(state.pocket);
   compSlots.assign(state.comp);
+  suiteSlots.assign(suiteSel());
 }
 
 /** Whichever dimension the charts are currently drawing one line per. */
@@ -554,6 +590,10 @@ function pocketSplit() {
 function componentSplit() {
   return { key: "component", names: D.components, sel: state.comp,
            slots: compSlots, label: "component" };
+}
+function suiteSplit() {
+  return { key: "suite", names: SUITE_NAMES, sel: suiteSel(),
+           slots: suiteSlots, label: "suite" };
 }
 
 /** kernel/total bytes at one snapshot, deduplicated across the selection. */
@@ -1346,6 +1386,24 @@ function viewLists(host) {
   });
   legend(compCard, compSize.series.map(l => [l.name, l.colour]));
   dropNote(compCard, compSize);
+
+  const bySuite = indexTimelineBy(suiteSplit(), (s, a, c, p) => s * NPOCK + p);
+  const suiteCard = card(host, "Package lists, per suite",
+    "Compressed size, one line per series-and-pocket pair -- what a " +
+    "sources.list line actually names. Every ticked series crossed with " +
+    "every pocket is many more lines than there are colours, so this one " +
+    "wants filtering: narrow to a series or two and it shows how a " +
+    "release's lists divide between the pocket frozen on release day and " +
+    "the ones that grow afterwards.");
+  const suiteSize = splitLines(bySuite, c => c.csize);
+  lineChart(suiteCard, {
+    x: xs,
+    xTitle: i => stamp(D.snapshots[i]),
+    fmt: bytes,
+    series: suiteSize.series,
+  });
+  legend(suiteCard, suiteSize.series.map(l => [l.name, l.colour]));
+  dropNote(suiteCard, suiteSize);
 
   const entCard = card(host, "Entries in the package lists",
     "One entry per stanza, counted as the indexes list them rather than as " +
