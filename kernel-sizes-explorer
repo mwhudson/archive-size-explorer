@@ -16,7 +16,9 @@ file://, no server needed.
 """
 
 import argparse
+import base64
 import datetime
+import gzip
 import json
 import os
 import re
@@ -282,21 +284,89 @@ def encode(byclass, byflavour, byindex, snaps, series_list):
     }
 
 
-def write_html(path, payload):
+# How many leading columns of each table are keys rather than measurements.
+# Keys are small, and the rows are emitted in sorted order, so a key column
+# delta-encodes to almost nothing; a size column does not and is left alone.
+TABLE_KEYS = {"byClass": 6, "byFlavour": 5, "byIndex": 5}
+
+
+def varint(n, out):
+    while True:
+        b = n & 0x7f
+        n >>= 7
+        out.append(b | 0x80 if n else b)
+        if not n:
+            return
+
+
+def zigzag(n):
+    """Fold a signed delta onto the naturals, so -1 costs one byte, not ten."""
+    return n << 1 if n >= 0 else (-n << 1) - 1
+
+
+def pack_table(rows, stride, keys):
+    """One table as columns of varints, key columns delta-encoded.
+
+    Columnar because neighbouring rows agree in almost every key: sorted by
+    key tuple, the snapshot column is a run of zero deltas and the rest are
+    small.  Interleaved by row that structure is invisible to the compressor.
+    """
+    buf = bytearray()
+    n = len(rows) // stride
+    for c in range(stride):
+        if c < keys:
+            prev = 0
+            for i in range(n):
+                v = rows[i * stride + c]
+                varint(zigzag(v - prev), buf)
+                prev = v
+        else:
+            for i in range(n):
+                varint(rows[i * stride + c], buf)
+    return bytes(buf)
+
+
+def encode_payload(data):
+    """Split the dataset into a small JSON header and one packed binary blob.
+
+    The blob is gzipped and base64'd so it can still live inside a single
+    self-contained file that opens over file://, which a fetch could not.
+    Base64 costs a third on disk and nothing on the wire, since gzipping the
+    page undoes the expansion almost exactly.
+    """
+    blob = bytearray()
+    tables = []
+    for name in ("byClass", "byFlavour", "byIndex"):
+        table = data[name]
+        stride, keys = table["stride"], TABLE_KEYS[name]
+        tables.append({"name": name, "stride": stride, "keys": keys,
+                       "rows": len(table["rows"]) // stride})
+        blob += pack_table(table["rows"], stride, keys)
+    packed = gzip.compress(bytes(blob), 9)
+    header = {k: v for k, v in data.items() if k not in
+              ("byClass", "byFlavour", "byIndex")}
+    header["tables"] = tables
+    header["blob"] = base64.b64encode(packed).decode("ascii")
+    return header, len(blob), len(packed)
+
+
+def write_html(path, data):
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "template.html")) as f:
         template = f.read()
+    header, raw, packed = encode_payload(data)
+    payload = json.dumps(header, separators=(",", ":"))
     html = template.replace("/*DATA*/null/*DATA*/", payload)
     with open(path, "w") as f:
         f.write(html)
-    log("wrote %s (%.1f MiB)" % (path, len(html) / 2 ** 20))
+    log("wrote %s (%.1f MiB; %.1f MiB packed, %.1f MiB gzipped)"
+        % (path, len(html) / 2 ** 20, raw / 2 ** 20, packed / 2 ** 20))
 
 
 def cmd_build(args):
     if args.from_json:
         with open(args.from_json) as f:
-            payload = f.read()
-        write_html(args.output, payload)
+            write_html(args.output, json.load(f))
         return 0
     builder = make_builder(args)
     snaps = snapshots(args.from_, args.to, args.every)
@@ -315,13 +385,13 @@ def cmd_build(args):
            len(data["byFlavour"]["rows"]) // 8,
            len(data["byIndex"]["rows"]) // 9, ", ".join(seen)))
 
-    payload = json.dumps(data, separators=(",", ":"))
     if args.json:
+        payload = json.dumps(data, separators=(",", ":"))
         with open(args.json, "w") as f:
             f.write(payload)
         log("wrote %s (%.1f MiB)" % (args.json, len(payload) / 2 ** 20))
     if args.output:
-        write_html(args.output, payload)
+        write_html(args.output, data)
     return 0
 
 

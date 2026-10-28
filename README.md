@@ -130,7 +130,7 @@ $ ./kernel-sizes-explorer build --from-json data.json -o kernels.html   # instan
 
 For scale: the full default run is 43 monthly snapshots across 12 series, which
 was 12.5 GB of downloads, 873 MiB of cache (of which 4.0 MiB is the
-aggregates), and a 9.9 MiB page.
+aggregates), and a 1.3 MiB page.
 
 ## What counts as a kernel
 
@@ -295,7 +295,24 @@ entries and 0.4% kernel, `restricted` — where `linux-restricted-modules` and i
 ## How it is put together
 
 `kernel_sizes.py` does the work; `kernel-sizes-explorer` is the CLI;
-`template.html` is the page, with the dataset spliced into it as JSON.
+`template.html` is the page, with the dataset spliced into it as a small JSON
+header plus one packed blob.
+
+The blob is a column store: each table's columns are written out one after
+another as varints, with the key columns delta-encoded against the row above.
+Sorted by key tuple, the snapshot column is a run of zeroes and the rest are
+small numbers, which is structure a compressor cannot see while the columns are
+interleaved a row at a time. Gzipped and base64'd, 9.8 MiB of JSON becomes a
+1.3 MiB page — and base64 costs nothing over HTTP, since gzipping the page
+undoes the expansion almost exactly.
+
+The page inflates it with `DecompressionStream` and rebuilds each table as one
+flat `Float64Array`, which is the shape the scans want anyway. Float64 rather
+than Int32 because the size columns run past four billion; the keys are small
+enough that the bitwise pocket and series filters still work on them. That is
+also faster than what it replaces: a JSON literal that large has to go through
+the JavaScript parser before anything can be drawn, which costs more than the
+gunzip and the varints together.
 
 The `Release` files are cached too, as `path -> (checksum, size)`. The size
 column is what the Package lists tab runs on, and it is the only record of it:

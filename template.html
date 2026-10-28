@@ -205,10 +205,94 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 <div class="tooltip" id="tooltip"></div>
 
 <script>
-const DATA = /*DATA*/null/*DATA*/;
+const PAYLOAD = /*DATA*/null/*DATA*/;
+
+/** Rebuild the tables from the packed blob.
+ *
+ * The dataset is one JSON header plus a gzipped, base64'd column store, which
+ * is about eight times smaller than the same numbers as a JavaScript literal
+ * and, unlike a literal, does not have to be parsed by the JS parser before
+ * anything can be drawn.  Each table comes back as one flat Float64Array in
+ * row-major order, exactly the shape the scans below already index.  Float64
+ * rather than Int32 because the size columns run past four billion; the key
+ * columns are small enough that the bitwise filters still work on them.
+ */
+async function loadData() {
+  // Not Uint8Array.from(s, cb): the per-byte callback costs more than the
+  // whole gunzip that follows it.
+  const bin = atob(PAYLOAD.blob);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  if (typeof DecompressionStream !== "function") {
+    throw new Error("this browser has no DecompressionStream");
+  }
+  const buf = new Uint8Array(await new Response(
+    new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))
+  ).arrayBuffer());
+
+  let p = 0;
+  const out = {
+    generated: PAYLOAD.generated, otherClass: PAYLOAD.otherClass,
+    pockets: PAYLOAD.pockets, dims: PAYLOAD.dims,
+  };
+  for (const t of PAYLOAD.tables) {
+    const n = t.rows, stride = t.stride;
+    const rows = new Float64Array(n * stride);
+    for (let c = 0; c < stride; c++) {
+      if (c < t.keys) {
+        // Keys and their deltas are all far inside 32 bits, so this stays on
+        // the integer path: shifts to accumulate, and a branchless zigzag.
+        let prev = 0;
+        for (let i = 0, o = c; i < n; i++, o += stride) {
+          let b = buf[p++], v = b & 0x7f, sh = 7;
+          while (b & 0x80) { b = buf[p++]; v |= (b & 0x7f) << sh; sh += 7; }
+          prev += (v >>> 1) ^ -(v & 1);
+          rows[o] = prev;
+        }
+      } else {
+        // Measurements run past 2^32, so the first four groups are unrolled
+        // on the integer path and anything wider falls through to floats.
+        for (let i = 0, o = c; i < n; i++, o += stride) {
+          let b = buf[p++], v = b & 0x7f;
+          if (b & 0x80) {
+            b = buf[p++]; v |= (b & 0x7f) << 7;
+            if (b & 0x80) {
+              b = buf[p++]; v |= (b & 0x7f) << 14;
+              if (b & 0x80) {
+                b = buf[p++]; v |= (b & 0x7f) << 21;
+                if (b & 0x80) {
+                  let scale = 268435456;                  // 2 ** 28
+                  do {
+                    b = buf[p++];
+                    v += (b & 0x7f) * scale;
+                    scale *= 128;
+                  } while (b & 0x80);
+                }
+              }
+            }
+          }
+          rows[o] = v;
+        }
+      }
+    }
+    out[t.name] = { stride: stride, rows: rows };
+  }
+  return out;
+}
 </script>
 <script>
+(async function () {
 "use strict";
+
+let DATA;
+try {
+  DATA = await loadData();
+} catch (err) {
+  document.getElementById("views").innerHTML =
+    '<div class="card"><h2>Could not read the dataset</h2><p>' +
+    String(err && err.message ? err.message : err) + "</p></div>";
+  return;
+}
 
 const D = DATA.dims;
 const OTHER = D.classes.indexOf(DATA.otherClass);
@@ -1527,6 +1611,7 @@ window.addEventListener("resize", () => {
 });
 
 render();
+})();
 </script>
 </body>
 </html>
