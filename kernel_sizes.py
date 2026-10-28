@@ -60,13 +60,16 @@ PORTS_BASE = "https://ports.ubuntu.com/ubuntu-ports"
 MIRROR_MAX_AGE = 7 * 86400
 
 # A snapshot token meaning "the live archive" rather than a point in
-# snapshot.ubuntu.com's history.  Some series the snapshot service never
-# carried at all -- trusty is absent at every stamp, in every pocket -- and the
-# only place left to read them is the archive itself, which has exactly one
-# state: now.  Nothing about it is cached: there is no stamp to make a cache
-# entry valid, and the content-addressed blobs already make an unchanged suite
-# cost only its Release files.
+# snapshot.ubuntu.com's history.  Real tokens get the content digest of the
+# suites they stand for appended -- "live-<digest>" -- which makes them
+# immutable the way a stamp is, so the release and aggregate caches need to
+# know nothing about any of this.  A changed archive is simply a different
+# token.
 LIVE = "live"
+
+
+def is_live(snapshot):
+    return snapshot == LIVE or snapshot.startswith(LIVE + "-")
 
 # How long to keep trying when the archive is having a bad day.  The service
 # fails in bursts: whole minutes where large objects come back 502/503/504
@@ -244,6 +247,26 @@ class Cache:
                 f.write("%s\t%s\t%d\n" % (k, entries[k][0], entries[k][1]))
         os.replace(tmp, path)
 
+    def live_pin_path(self):
+        return self._path("live", "pin")
+
+    def get_live_pin(self):
+        """The live token this cache is pinned to, or None."""
+        try:
+            with open(self.live_pin_path()) as f:
+                token = f.read().strip()
+        except OSError:
+            return None
+        return token if is_live(token) else None
+
+    def put_live_pin(self, token):
+        path = self.live_pin_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        with open(tmp, "w") as f:
+            f.write(token + "\n")
+        os.replace(tmp, path)
+
     def mirror_path(self):
         return self._path("mirror", "series.tsv")
 
@@ -418,6 +441,18 @@ class Fetcher:
         answer, so this asks for the headers alone.
         """
         return self.get(url, head=True) is not None
+
+
+def live_entries(builder, series_names, token=LIVE):
+    """Release entry maps for every pocket of every live series."""
+    out = {}
+    for name in series_names:
+        for pocket in builder.pockets:
+            suite = suite_name(name, pocket)
+            entries = builder.release(token, suite)
+            if entries:
+                out[suite] = entries
+    return out
 
 
 def probe_mirror(fetcher, series):
@@ -810,7 +845,8 @@ def aggregate(rows, is_kernel_row=None):
 AGGREGATE_VERSION = 2
 
 
-def aggregate_key(series_list, components, arches, pockets, sources):
+def aggregate_key(series_list, components, arches, pockets, sources,
+                  extra=None):
     """Identity of one snapshot's aggregate: everything that shapes it.
 
     The series list is in there because the series bitmask is positional -- a
@@ -818,11 +854,42 @@ def aggregate_key(series_list, components, arches, pockets, sources):
     Architectures and pockets are sorted because they only decide which indexes
     get merged, not how; components are already in archive order, which
     load_slim relies on, so their order is kept as it stands.
+
+    `extra` carries anything else the aggregate depends on that a snapshot
+    stamp does not already pin down.  That means the live archive: a stamp
+    makes an aggregate valid forever, and a suite read from the live archive
+    has no such guarantee, so its content identity goes in the key instead.
     """
-    ident = repr((AGGREGATE_VERSION, list(series_list), list(components),
-                  sorted(arches) if arches else None, sorted(pockets),
-                  bool(sources)))
-    return hashlib.sha256(ident.encode()).hexdigest()[:16]
+    parts = (AGGREGATE_VERSION, list(series_list), list(components),
+             sorted(arches) if arches else None, sorted(pockets),
+             bool(sources))
+    # Appended only when there is one, so that every aggregate cached before
+    # this argument existed keeps the key it was written under.
+    if extra is not None:
+        parts = parts + (extra,)
+    return hashlib.sha256(repr(parts).encode()).hexdigest()[:16]
+
+
+def live_digest(entries_by_suite):
+    """Content identity of the live suites feeding an aggregate.
+
+    Built from the checksums a suite's Release records for its indexes, which
+    is what actually decides the rows: the same digests reduce to the same
+    blobs and so to the same aggregate, whatever the Release header says.
+    That matters because the archive rewrites a Release periodically without
+    changing anything in it, and keying on the file itself would throw the
+    cache away every time that happened.
+    """
+    h = hashlib.sha256()
+    for suite in sorted(entries_by_suite):
+        h.update(suite.encode())
+        entries = entries_by_suite[suite]
+        for path in sorted(entries):
+            if path.startswith("_"):
+                continue        # parsed metadata, not content
+            h.update(path.encode())
+            h.update(str(entries[path][0]).encode())
+    return h.hexdigest()[:16]
 
 
 # ---------------------------------------------------------------- snapshots
@@ -872,7 +939,7 @@ def snapshots(from_spec, to_spec, every):
 
 def dists_url(snapshot, suite, path):
     """Where to read one file of a suite's dists/ tree."""
-    if snapshot == LIVE:
+    if is_live(snapshot):
         return "%s/dists/%s/%s" % (ARCHIVE_BASE, suite, path)
     return "%s/%s/dists/%s/%s" % (SNAPSHOT_BASE, snapshot, suite, path)
 
@@ -935,6 +1002,9 @@ class Builder:
         cannot change, which is what makes an entry valid forever, and "now"
         has no such guarantee.
         """
+        # A bare "live" token is a probe with no content identity yet, so it
+        # is never cached; a "live-<digest>" one names fixed content and is
+        # cached like any stamp.
         live = snapshot == LIVE
         cached = None if live else self.cache.get_release(snapshot, suite)
         if cached is not None and not self._stale(cached):
@@ -962,7 +1032,7 @@ class Builder:
             return
         url = dists_url(snapshot, suite, path)
         body = self.fetcher.get(url)
-        if body is None and snapshot == LIVE:
+        if body is None and is_live(snapshot):
             url = "%s/dists/%s/%s" % (PORTS_BASE, suite, path)
             body = self.fetcher.get(url)
         if body is None:

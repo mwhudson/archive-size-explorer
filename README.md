@@ -46,22 +46,38 @@ because jammy and others reference the same files. Across all four removed
 series that is 1693.9 GiB no longer counted at the latest snapshot, taking the
 archive total from 10.1 TiB to 8.3 TiB.
 
-Two series sit outside all of that: trusty and xenial. They get a tile in the
-header, visible on every tab, and a card of their own below the archive
-charts. The snapshot service cannot answer for them —
-`dists/trusty` is absent at every stamp in every pocket, and xenial is there
-only as `-updates` and `-security`, without its release pocket — so they are
-read from the live archive instead, and reported as of the build rather than as
-of the last snapshot. That is also why they are not lines: the archive holds a
-single state, and attaching a series to the newest snapshot alone would step
-every total up by its whole size in one interval and leave a cliff in the rate
-view.
+trusty and xenial are ordinary series on the page, with chips and lines like
+any other, but they do not come from the snapshot service: it carries only what
+has been published since it came online in 2023, and their release pockets were
+last published in 2014 and 2016. They are read from the live archive instead,
+and the fact that explains their absence is also what makes that sound — a
+suite unpublished since before the window opened cannot have changed during it,
+so today's content is its content throughout. The one exception is trusty's
+updates, security, proposed and backports pockets, still published yet still
+missing from the service; those are today's value held flat, so trusty is
+slightly overstated early on. The page says so.
 
-Reading xenial both ways measures how big that gap is. From the snapshot
-service xenial is 121.5 GiB; from the live archive it is 413.6 GiB. The missing
-three quarters is its release pocket plus the architectures snapshot does not
-carry for it. trusty adds another 292.0 GiB, so between them that is around 706
-GiB of mirror the charts above count as nothing.
+Reading xenial both ways says what the gap is worth: 121.5 GiB from the
+snapshot service against 413.6 GiB from the archive, the missing three quarters
+being its release pocket plus the architectures the service does not carry for
+it.
+
+They have to be merged into each snapshot's pool map rather than added to it,
+for the same reason a snapshot is aggregated whole: a file two series reference
+needs one row with a wider mask, not two rows. Folding them in separately
+overstated the archive by 36.14 GiB, nearly all of it arch-independent data
+packages carrying identical versions across releases — `sauerbraten
+0.0.20140302-1` is one pool file that xenial and bionic both point at. Their
+real contribution is 669.53 GiB, against 705.67 for the sum of their two
+per-series totals.
+
+That merging is why adding them cost a full re-aggregation, and why the live
+read is pinned. A live suite has no stamp to make a cached aggregate valid
+forever, so its content digest goes into the aggregate key as `live-<digest>`;
+left to track the archive, that would re-aggregate every snapshot each time
+trusty published — hours of work triggered by someone else's upload.
+`--refresh-live` asks for it deliberately, and `--offline` builds read the pin
+and touch nothing.
 
 The live read needs both of the archive's hosts. `archive.ubuntu.com` carries
 amd64 and i386 and nothing else; every other architecture is published to
@@ -69,11 +85,8 @@ amd64 and i386 and nothing else; every other architecture is published to
 serving everything under one tree. A suite's `Release` on archive.ubuntu.com
 lists the ports indexes too, checksums and all, and the two hosts publish in
 step — so one `Release` plans fetches from both, and the checksum settles which
-host answered. None of it is cached: a cache entry is only valid while what it
-describes cannot change, and "now" has no such guarantee. The content-addressed
-blobs still make an unchanged suite cost only its `Release` files, which is
-about 11 seconds a build, and `--offline` skips it entirely — the card just
-does not appear.
+host answered. All six architectures of trusty and all seven of xenial are
+counted, release pocket included.
 
 Which series those are cannot be read out of the snapshot data, which is worth
 knowing if you are tempted to derive it: the snapshot service keeps every suite
@@ -92,6 +105,14 @@ consecutive weekly snapshots — so they look frozen when they are not. And it i
 narrower than the question anyway: a series goes EOL, stops changing, and is
 only removed from the archive months later, so plucky and questing are costing
 mirror bytes right now while sitting perfectly still.
+
+Where there are more lines than the eight hues in the palette, the hues come
+round again and each repeat is drawn dashed, so identity is the colour and the
+dash together rather than the colour alone; nothing is left undrawn for want of
+a colour. Series claim hues newest-first, so if anything goes dashed it is the
+oldest frozen series rather than the one under development. Four dash patterns
+against eight hues is 32 distinct pairs, and past that they genuinely repeat —
+the page says so and points at the table.
 
 There are three things it will tell you: how much of the archive is kernels,
 how big the archive is, and how big the package lists are. The **Whole archive**

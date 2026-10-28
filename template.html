@@ -132,6 +132,8 @@ svg .endlabel { font-size: 11px; font-weight: 560; }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 10px 0 0; }
 .legend .item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
 .legend .key { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+/* Used when a legend has dashed entries: a line reads as a line. */
+.legend .key.line { width: 18px; height: 3px; border-radius: 2px; }
 
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--grid); }
@@ -186,13 +188,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     <div class="value" id="tile-share">–</div>
     <div class="note" id="tile-share-note"></div>
   </div>
-  <!-- Series with no snapshot history, so counted in nothing else on the
-       page.  Hidden unless the dataset carries them. -->
-  <div class="tile" id="tile-live" hidden>
-    <div class="label">ALSO ON THE MIRROR</div>
-    <div class="value" id="tile-live-value">–</div>
-    <div class="note" id="tile-live-note"></div>
-  </div>
 </div>
 
 <div class="filters" id="filters"></div>
@@ -241,7 +236,7 @@ async function loadData() {
   const out = {
     generated: PAYLOAD.generated, otherClass: PAYLOAD.otherClass,
     pockets: PAYLOAD.pockets, dims: PAYLOAD.dims,
-    mirrored: PAYLOAD.mirrored, live: PAYLOAD.live,
+    mirrored: PAYLOAD.mirrored, liveSeries: PAYLOAD.liveSeries,
     mirrorRemoved: PAYLOAD.mirrorRemoved,
   };
   for (const t of PAYLOAD.tables) {
@@ -305,38 +300,81 @@ try {
 
 const D = DATA.dims;
 const OTHER = D.classes.indexOf(DATA.otherClass);
-const SLOTS = 8;                       // categorical slots; never cycled
+// Hues in the categorical palette.  A selection wider than this reuses them,
+// each repeat carrying a different dash -- see Slots below.
+const SLOTS = 8;
 
-// Colour follows the entity, not its rank: once a series holds a slot it keeps
-// it until it is deselected, so filtering never repaints the survivors.  There
-// are only SLOTS colours and none are ever reused or generated, so a selection
-// wider than that leaves the extras uncoloured -- they stay in the table.
-// Colour follows the entity, not its rank: once a key holds a slot it keeps
-// it until deselected, so filtering never repaints the survivors.  There are
-// only SLOTS colours and none are ever reused or generated, so a selection
-// wider than that leaves the extras uncoloured -- they stay in the table.
-function Slots() { this.map = new Map(); }
+// Colour follows the entity, not its rank: once a key holds a slot it keeps it
+// until deselected, so filtering never repaints the survivors.
+//
+// A selection wider than the palette reuses the hues rather than leaving the
+// extras undrawn, which is what the mirror asks for -- it carries ten series
+// and there are eight hues, and a series you cannot see is worse than one
+// sharing a colour.  What stops a repeat being ambiguous is that it is a
+// different dash, so identity is the pair and never the hue alone.
+/** Slots, in the order keys should claim them.
+ *
+ *  `first` decides who gets a plain hue when there are more keys than hues,
+ *  since the dashed repeats come last.  It is a fixed order over the keys
+ *  themselves, not over their values, so it is still true that colour follows
+ *  the entity and never its rank: a filter that changes the selection cannot
+ *  repaint a survivor.
+ */
+function Slots(first) { this.map = new Map(); this.first = first; }
 
 Slots.prototype.assign = function (selected) {
   for (const k of [...this.map.keys()]) {
     if (!selected.has(k)) this.map.delete(k);
   }
   const used = new Set(this.map.values());
-  for (const k of [...selected].sort((a, b) => a - b)) {
+  for (const k of [...selected].sort(this.first || ((a, b) => a - b))) {
     if (this.map.has(k)) continue;
-    for (let i = 0; i < SLOTS; i++) {
-      if (!used.has(i)) { this.map.set(k, i); used.add(i); break; }
-    }
+    // Unbounded: past SLOTS the colours come round again, paired with a
+    // different dash so no two selections look alike.  Lowest free slot, so
+    // the survivors of a deselection keep what they had.
+    let i = 0;
+    while (used.has(i)) i++;
+    this.map.set(k, i);
+    used.add(i);
   }
 };
 Slots.prototype.colour = function (k) {
-  return this.map.has(k) ? "var(--s" + (this.map.get(k) + 1) + ")" : null;
+  return this.map.has(k)
+    ? "var(--s" + (this.map.get(k) % SLOTS + 1) + ")" : null;
 };
+
+// Dash patterns for each turn round the palette.  Identity is never colour
+// alone once the palette repeats: it is the pair, which is why these have to
+// be as distinguishable from each other as the hues are.  Nothing beyond the
+// last pattern, so a fifth turn would repeat outright -- 40 lines on one
+// chart is a problem no encoding solves.
+const DASHES = [null, "7 4", "2 3", "11 3 2 3"];
+
+Slots.prototype.dash = function (k) {
+  if (!this.map.has(k)) return null;
+  return DASHES[Math.floor(this.map.get(k) / SLOTS) % DASHES.length];
+};
+
+/** How many times the palette has come round for this key. */
+Slots.prototype.cycle = function (k) {
+  return this.map.has(k) ? Math.floor(this.map.get(k) / SLOTS) : 0;
+};
+
+/** A CSS background for a chip or legend key: the hue, dashed if it repeats. */
+Slots.prototype.swatch = function (k) {
+  const colour = this.colour(k);
+  if (!colour || !this.dash(k)) return colour;
+  return "repeating-linear-gradient(90deg, " + colour + " 0 3px, " +
+         "transparent 3px 5px)";
+};
+
 Slots.prototype.drawable = function (selected) {
   return [...selected].sort((a, b) => a - b).filter(k => this.map.has(k));
 };
 
-const seriesSlots = new Slots();
+// Newest series first, so if anything has to go dashed it is the oldest --
+// a frozen ESM series rather than the development one.
+const seriesSlots = new Slots((a, b) => b - a);
 const archSlots = new Slots();
 // Pocket and component are filters on every other tab.  On Package lists they
 // are also drawn as lines, because an index file belongs to exactly one of
@@ -381,6 +419,8 @@ function suiteSel() {
 }
 const seriesColour = k => seriesSlots.colour(k);
 const archColour = k => archSlots.colour(k);
+const seriesSwatch = k => seriesSlots.swatch(k);
+const archSwatch = k => archSlots.swatch(k);
 
 function assignSlots() {
   seriesSlots.assign(state.series);
@@ -420,16 +460,9 @@ function activeSeries() {
     const want = new Set(DATA.mirrored);
     const picked = new Set();
     D.series.forEach((name, i) => { if (want.has(name)) picked.add(i); });
-    if (picked.size) return capped(picked);
+    if (picked.size) return picked;
   }
   return guessedActiveSeries();
-}
-
-// Never open with more lines than there are colours: beyond SLOTS they are
-// selected but undrawn, which looks like a bug rather than a choice.  Keeps
-// the newest, by series index.
-function capped(picked) {
-  return new Set([...picked].sort((a, b) => b - a).slice(0, SLOTS));
 }
 
 // The fallback for a dataset built without a mirror probe: a series that has
@@ -454,7 +487,7 @@ function guessedActiveSeries() {
   const candidates = active.length
     ? active
     : now.map((v, i) => (v ? i : -1)).filter(i => i >= 0);
-  const picked = capped(new Set(candidates));
+  const picked = new Set(candidates);
   return picked.size ? picked : new Set(D.series.map((_, i) => i));
 }
 
@@ -865,13 +898,13 @@ function lineChart(host, opts) {
   const rate = state.shown === "rate";
   const logY = state.shown === "log";
   const series = rate
-    ? opts.series.map(s => ({ name: s.name, colour: s.colour,
+    ? opts.series.map(s => ({ name: s.name, colour: s.colour, dash: s.dash,
                               points: rates(s.points, state.rateWindow) }))
     : logY
     // Zero and below have no position on a log axis.  A gap says "cannot be
     // drawn here", which is the truth, where clamping to the bottom tick would
     // invent a value and draw a line to it.
-    ? opts.series.map(s => ({ name: s.name, colour: s.colour,
+    ? opts.series.map(s => ({ name: s.name, colour: s.colour, dash: s.dash,
                               points: s.points.map(p => (p > 0 ? p : null)) }))
     : opts.series;
   const fmt = rate ? (v => signed(v, opts.diffFmt || opts.fmt) + "/mo")
@@ -937,6 +970,7 @@ function lineChart(host, opts) {
     });
     if (!d) continue;
     el("path", { d, fill: "none", stroke: s.colour, "stroke-width": 2,
+                 ...(s.dash ? { "stroke-dasharray": s.dash } : {}),
                  "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
     // direct label at the last real point
     let last = -1;
@@ -1100,13 +1134,13 @@ function buildFilters() {
   const host = document.getElementById("filters");
   host.innerHTML = "";
   host.appendChild(chipRow("Series", D.series, state.series, toggler(state.series),
-                           i => seriesColour(i),
+                           i => seriesSwatch(i),
                            [["select default",
-                             "the series the live archive still carries, " +
+                             "every series the live archive still carries, " +
                              "which is what the page opens with",
                              () => setTo(state.series, DEFAULTS.series)]]));
   host.appendChild(chipRow("Arch", D.arches, state.arch, toggler(state.arch),
-                           i => archColour(i)));
+                           i => archSwatch(i)));
   host.appendChild(chipRow("Pocket", DATA.pockets, state.pocket, toggler(state.pocket)));
   host.appendChild(chipRow("Component", D.components, state.comp, toggler(state.comp)));
 
@@ -1140,22 +1174,41 @@ function splitLines(tl, pick) {
   const drawn = sp.slots.drawable(sp.sel);
   return {
     dropped: sp.sel.size - drawn.length,
+    repeats: drawn.filter(k => sp.slots.cycle(k) > 0).length,
     label: sp.label,
     keys: drawn,
     series: drawn.map(k => ({
       name: sp.names[k],
       colour: sp.slots.colour(k),
+      dash: sp.slots.dash(k),
       points: (tl.perKey.get(k) || []).map(c => (c ? pick(c) : null)),
     })),
   };
 }
 
+/** Say so when the palette has had to come round again.
+ *
+ *  Was a warning that extra selections went undrawn; the palette repeats
+ *  instead now, so what needs saying is that a colour appears twice and the
+ *  dash is what separates the two.
+ */
 function dropNote(host, lines) {
-  if (!lines.dropped) return;
-  note(host, lines.dropped + (lines.dropped === 1 ? " more selected " : " more selected ") +
-       lines.label + (lines.dropped === 1 ? " is" : " are") + " not drawn: all " +
-       SLOTS + " colour slots are taken, and reusing one would be ambiguous. " +
-       "Untick one to free a colour, or use the table view.");
+  if (lines.repeats) {
+    note(host, lines.keys.length + " lines are selected and there are only " +
+      SLOTS + " colours, so " + lines.repeats +
+      " of them reuse a hue. A reused hue is drawn dashed, and the legend " +
+      "shows which: the colour and the dash together name the " + lines.label +
+      (lines.keys.length > SLOTS * (DASHES.length - 1) + SLOTS
+        ? ", though past " + SLOTS * DASHES.length + " even those pairs run " +
+          "out and some really are alike -- the table view is the way to " +
+          "read this many."
+        : ", so no two lines look alike."));
+  }
+  if (lines.dropped) {
+    note(host, lines.dropped + " selected " + lines.label +
+      (lines.dropped === 1 ? " is" : " are") + " not drawn. That should not " +
+      "happen -- every selection gets a colour -- so it is worth reporting.");
+  }
 }
 
 function viewTime(host, tl) {
@@ -1175,9 +1228,10 @@ function viewTime(host, tl) {
     minMax: 10,
     series: shareLines.series,
   });
-  legend(shareCard, shareLines.series.map(l => [l.name, l.colour]));
+  legend(shareCard, shareLines.series.map(l => [l.name, l.colour, l.dash]));
   dropNote(shareCard, shareLines);
   removedNote(shareCard);
+  liveNote(shareCard);
 
   const absLines = splitLines(tl, c => c.kernel);
   const absCard = card(host, "Kernel bytes, per " + tl.split.label,
@@ -1189,7 +1243,7 @@ function viewTime(host, tl) {
     fmt: bytes,
     series: absLines.series,
   });
-  legend(absCard, absLines.series.map(l => [l.name, l.colour]));
+  legend(absCard, absLines.series.map(l => [l.name, l.colour, l.dash]));
   if (tl.split.key === "series") {
     note(absCard, "A file that several series share counts towards each of " +
          "them, so these lines add up to more than the archive holds. The " +
@@ -1431,9 +1485,10 @@ function viewArchive(host) {
     fmt: bytes,
     series: sizeLines.series,
   });
-  legend(splitCard, sizeLines.series.map(l => [l.name, l.colour]));
+  legend(splitCard, sizeLines.series.map(l => [l.name, l.colour, l.dash]));
   dropNote(splitCard, sizeLines);
   removedNote(splitCard);
+  liveNote(splitCard);
 
   const shareCard = card(host, "Kernel share of the whole archive",
     "The two lines from the first chart as a ratio.");
@@ -1496,7 +1551,6 @@ function viewArchive(host) {
     t.appendChild(wrap);
   });
 
-  liveCard(host);
 }
 
 /* ------------------------------------------------------------ the lists */
@@ -1557,7 +1611,7 @@ function viewLists(host) {
     fmt: bytes,
     series: sizeLines.series,
   });
-  legend(splitCard, sizeLines.series.map(l => [l.name, l.colour]));
+  legend(splitCard, sizeLines.series.map(l => [l.name, l.colour, l.dash]));
   dropNote(splitCard, sizeLines);
   const allArch = D.arches.indexOf("all");
   if (il.split.key === "arch" && state.arch.has(allArch)) {
@@ -1580,7 +1634,7 @@ function viewLists(host) {
     fmt: bytes,
     series: pocketSize.series,
   });
-  legend(pocketCard, pocketSize.series.map(l => [l.name, l.colour]));
+  legend(pocketCard, pocketSize.series.map(l => [l.name, l.colour, l.dash]));
   dropNote(pocketCard, pocketSize);
 
   const compCard = card(host, "Package lists, per component",
@@ -1593,7 +1647,7 @@ function viewLists(host) {
     fmt: bytes,
     series: compSize.series,
   });
-  legend(compCard, compSize.series.map(l => [l.name, l.colour]));
+  legend(compCard, compSize.series.map(l => [l.name, l.colour, l.dash]));
   dropNote(compCard, compSize);
 
   const bySuite = indexTimelineBy(suiteSplit(), (s, a, c, p) => s * NPOCK + p);
@@ -1611,7 +1665,7 @@ function viewLists(host) {
     fmt: bytes,
     series: suiteSize.series,
   });
-  legend(suiteCard, suiteSize.series.map(l => [l.name, l.colour]));
+  legend(suiteCard, suiteSize.series.map(l => [l.name, l.colour, l.dash]));
   dropNote(suiteCard, suiteSize);
 
   const entCard = card(host, "Entries in the package lists",
@@ -1673,7 +1727,7 @@ function viewLists(host) {
     height: 260,
     series: pocketShare.series,
   });
-  legend(pocketShareCard, pocketShare.series.map(l => [l.name, l.colour]));
+  legend(pocketShareCard, pocketShare.series.map(l => [l.name, l.colour, l.dash]));
   dropNote(pocketShareCard, pocketShare);
 
   const compShareCard = card(host, "Kernel share of the lists, per component",
@@ -1692,7 +1746,7 @@ function viewLists(host) {
     height: 260,
     series: compShare.series,
   });
-  legend(compShareCard, compShare.series.map(l => [l.name, l.colour]));
+  legend(compShareCard, compShare.series.map(l => [l.name, l.colour, l.dash]));
   dropNote(compShareCard, compShare);
 
   snapshotChooser(host, body => {
@@ -1772,12 +1826,19 @@ function legend(host, entries) {
   if (entries.length < 2) return;   // one series is named by its own end label
   const box = document.createElement("div");
   box.className = "legend";
+  // Once any entry is dashed the keys become little lines rather than blocks,
+  // all of them, so that solid and dashed are compared like with like and the
+  // key looks like the mark it stands for.
+  const anyDash = entries.some(e => e[2]);
   for (const entry of entries) {
     const item = document.createElement("span");
     item.className = "item";
     const key = document.createElement("span");
-    key.className = "key";
-    key.style.background = entry[1];
+    key.className = anyDash ? "key line" : "key";
+    key.style.background = entry[2]
+      ? "repeating-linear-gradient(90deg, " + entry[1] + " 0 5px, " +
+        "transparent 5px 8px)"
+      : entry[1];
     item.appendChild(key);
     item.appendChild(document.createTextNode(entry[0]));
     box.appendChild(item);
@@ -1816,40 +1877,27 @@ function removedNote(host) {
     "with one still carried are unaffected.");
 }
 
-function liveCard(host) {
-  const info = DATA.live;
-  if (!info || !info.series || !info.series.length) return;
-  const rows = info.series;
-  const c = card(host, "Also on the mirror, with no snapshot history",
-    "The snapshot service does not carry these series, so they cannot be " +
-    "drawn over time and are counted in nothing above. Read from " +
-    info.source + " when the page was built, which makes them current " +
-    "rather than as of the last snapshot.");
-  const wrap = document.createElement("div");
-  wrap.className = "tablewrap";
-  let html = "<table><thead><tr><th>Series</th><th>Download</th>" +
-             "<th>Installed</th><th>Kernels</th><th>Packages</th>" +
-             "<th>Architectures</th></tr></thead><tbody>";
-  for (const r of rows) {
-    html += "<tr><td>" + r.name + "</td>" +
-      '<td class="num">' + bytes(r.size) + "</td>" +
-      '<td class="num">' + bytes(r.isize) + "</td>" +
-      '<td class="num">' + bytes(r.kernelSize) + " (" +
-        (r.size ? (100 * r.kernelSize / r.size).toFixed(1) : "0") + "%)</td>" +
-      '<td class="num">' + r.packages.toLocaleString() + "</td>" +
-      "<td>" + (r.arches || []).join(" ") + "</td></tr>";
-  }
-  if (rows.length > 1) {
-    html += '<tr><td>all of them</td><td class="num">' +
-      bytes(rows.reduce((a, r) => a + r.size, 0)) + "</td>" +
-      '<td class="num">' + bytes(rows.reduce((a, r) => a + r.isize, 0)) +
-      "</td>" +
-      '<td class="num">' + bytes(rows.reduce((a, r) => a + r.kernelSize, 0)) +
-      "</td><td></td><td></td></tr>";
-  }
-  html += "</tbody></table>";
-  wrap.innerHTML = html;
-  c.appendChild(wrap);
+/** Which series are the present held constant rather than real history.
+ *
+ *  The snapshot service has no record of these -- it only ever saw suites
+ *  published after it came online, and these were last published before that
+ *  -- so they are read from the live archive.  For a suite that has not been
+ *  published since before the window opened, today's content *is* its content
+ *  throughout, which is why this is an inference rather than an invention.
+ *  Where that does not hold it is said plainly.
+ */
+function liveNote(host) {
+  const names = DATA.liveSeries;
+  if (!names || !names.length) return;
+  note(host, names.join(" and ") + " are read from archive.ubuntu.com, not " +
+    "from the snapshot service, which has no record of them: it carries only " +
+    "what has been published since it came online in 2023, and their release " +
+    "pockets were last published in 2014 and 2016. A suite unpublished since " +
+    "before the window cannot have changed during it, so today's content is " +
+    "its content throughout. The exception is trusty's updates, security, " +
+    "proposed and backports pockets, which are still published but absent " +
+    "from the service: those are today's value held flat, so trusty is a " +
+    "little overstated early on.");
 }
 
 function note(host, text) {
@@ -1879,19 +1927,6 @@ function updateTiles() {
   document.getElementById("tile-share-note").textContent =
     "of " + bytes(cur.total) + " " + scope;
 
-  // The series read from the live archive are in none of the numbers above --
-  // they have no history to put on a time axis -- so they get said out loud
-  // here rather than only in their card on the Whole archive tab.  Without
-  // this the page gives no sign they exist until you go looking.
-  const extra = DATA.live && DATA.live.series;
-  if (extra && extra.length) {
-    const tile = document.getElementById("tile-live");
-    document.getElementById("tile-live-value").textContent =
-      bytes(extra.reduce((a, r) => a + r.size, 0));
-    document.getElementById("tile-live-note").textContent =
-      extra.map(r => r.name).join(" + ") + ", no snapshot history";
-    tile.hidden = false;
-  }
 }
 
 function render() {

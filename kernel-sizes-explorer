@@ -33,8 +33,8 @@ from kernel_sizes import (  # noqa: E402
     ARCHIVE_BASE, Builder, Cache, Fetcher, CANDIDATE_SERIES,
     DEFAULT_COMPONENTS, LIVE, LIVE_SERIES, MIRROR_MAX_AGE, OTHER, POCKETS,
     MIRROR_REMOVED, RELEASE_ORDER, SEPARATE_SERIES, aggregate, aggregate_key,
-    count_index, default_cache_dir, kernel_predicate, log, merge_rows,
-    probe_mirror, removed_after, snapshots,
+    count_index, default_cache_dir, kernel_predicate, live_digest,
+    live_entries, log, merge_rows, probe_mirror, removed_after, snapshots,
 )
 
 
@@ -167,48 +167,45 @@ def mirror_series(builder, series_list):
     return kept
 
 
-def live_totals(builder, names):
-    """Present-day totals for series the snapshot service cannot answer for.
+def live_token(builder, names, refresh):
+    """A content-addressed token standing for the live suites' current state.
 
-    One entry per series that could be read, with no time dimension: the
-    archive holds a single state.  A failure here costs the entry and nothing
-    else -- these sit beside the charts rather than in them, so a page without
-    them is complete, just less informative.
+    Pinned by default.  The token is part of the aggregate key, so letting it
+    follow the archive would re-aggregate every snapshot each time trusty or
+    xenial publishes -- hours of work triggered by someone else's upload.
+    Pinning makes that a thing you ask for with --refresh-live, and leaves an
+    ordinary rebuild reading nothing from the network for these series.
+
+    Returns None when there is nothing usable, which leaves them out.
     """
-    out = []
-    for name in names:
-        try:
-            cls_table, _flav, _idx, here, partial = aggregate_snapshot(
-                builder, LIVE, [name])
-        except (SkipOffline, requests.RequestException, RuntimeError) as e:
-            # RuntimeError is how an archive inconsistency arrives -- a
-            # Release listing an index neither host actually serves, or a
-            # checksum that does not match.  The time series does not depend
-            # on any of this, so none of it is worth failing a build over.
-            log("live read of %s failed (%s); leaving it out" % (name, e))
-            continue
-        if not cls_table or partial:
-            # partial means a read was skipped, and only --offline does that:
-            # there is no cache for the live archive to fall back on.
-            log("no live reading for %s%s"
-                % (name, " (--offline)" if partial else ""))
-            continue
-        row = {"name": name, "size": 0, "isize": 0, "kernelSize": 0,
-               "kernelISize": 0, "packages": 0, "kernelPackages": 0,
-               "arches": sorted({k[1] for k in cls_table})}
-        for k, acc in cls_table.items():
-            row["packages"] += acc[0]
-            row["size"] += acc[1]
-            row["isize"] += acc[2]
-            if k[4] != OTHER:
-                row["kernelPackages"] += acc[0]
-                row["kernelSize"] += acc[1]
-                row["kernelISize"] += acc[2]
-        out.append(row)
-        log("live: %s is %.1f GiB over %d arches (%.1f GiB of kernels)"
-            % (name, row["size"] / 2 ** 30, len(row["arches"]),
-               row["kernelSize"] / 2 ** 30))
-    return out
+    if not names:
+        return None
+    pinned = builder.cache.get_live_pin()
+    if pinned and not refresh:
+        return pinned
+    try:
+        entries = live_entries(builder, names)
+    except (SkipOffline, requests.RequestException, RuntimeError) as e:
+        if pinned:
+            log("keeping the pinned live state (%s)" % e)
+            return pinned
+        log("no live state and none pinned (%s); leaving out %s"
+            % (e, " ".join(names)))
+        return None
+    if not entries:
+        log("the live archive has none of %s" % " ".join(names))
+        return None
+    token = "%s-%s" % (LIVE, live_digest(entries))
+    if token == pinned:
+        log("live state unchanged: %s" % token)
+        return token
+    # Write the Releases under the new token so the aggregates that cite it
+    # can be rebuilt from cache later.
+    live_entries(builder, names, token=token)
+    builder.cache.put_live_pin(token)
+    log("live state is now %s%s" % (token, " (was %s)" % pinned if pinned
+                                    else ""))
+    return token
 
 
 def tally_indexes(cache, plans, is_kernel, into):
@@ -238,7 +235,8 @@ def tally_indexes(cache, plans, is_kernel, into):
             acc[3] += ix.usize
 
 
-def aggregate_snapshot(builder, snap, series_list):
+def aggregate_snapshot(builder, snap, series_list, live_names=(),
+                       live_token=None):
     """Merge one snapshot's pool over series_list and aggregate it.
 
     Returns (cls_table, flav_table, idx_table, here, partial), where `here`
@@ -247,21 +245,29 @@ def aggregate_snapshot(builder, snap, series_list):
 
     Masks are bit positions in series_list, so a caller that aggregates a
     sub-list has to shift them before mixing the result with anything else.
+
+    A series in live_names is read from live_token instead of from snap.  It
+    has to be merged here rather than added afterwards: the pool is shared
+    across series, and a file two of them reference needs one row with a wider
+    mask, not two rows.  Folding trusty and xenial in separately overstated
+    the archive by 36.14 GiB, nearly all of it arch-independent data packages
+    at identical versions across releases.
     """
     whole = {}
     plans = []
     here = []
     partial = False
     for series in series_list:
+        src = live_token if series in live_names else snap
         try:
-            rows = builder.load_rows(snap, series)
+            rows = builder.load_rows(src, series)
         except SkipOffline:
             partial = True
             continue
         if rows is None:
             continue
         here.append(series)
-        plans.append((series, builder.plan(snap, series)))
+        plans.append((series, builder.plan(src, series)))
         merge_rows(whole, rows, 1 << series_list.index(series))
         del rows
     if not whole:
@@ -342,14 +348,16 @@ def drop_removed(byclass, byflavour, byindex, series_list):
     for key, acc in byclass.items():
         snap, smask = key[0], key[1]
         kept = surviving_mask(snap, smask)
-        if kept == smask:
-            out_class[key] = acc
-            continue
         if not kept:
             if snap == last:
                 dropped += acc[1]
             continue
-        new_key = (snap, kept) + key[2:]
+        # Every surviving row goes through the same accumulate, including the
+        # ones whose mask did not change.  Writing those straight through
+        # instead would overwrite a row that had already been trimmed onto the
+        # same key, losing its bytes -- and which came first depends on dict
+        # order, so it looked like dedup rather than a bug.
+        new_key = key if kept == smask else (snap, kept) + key[2:]
         prev = out_class.get(new_key)
         if prev is None:
             out_class[new_key] = list(acc)
@@ -374,7 +382,8 @@ def drop_removed(byclass, byflavour, byindex, series_list):
     return out_class, out_flav, out_idx, dropped
 
 
-def collect(builder, snaps, series_list, separate=(), progress=True):
+def collect(builder, snaps, series_list, separate=(), live_names=(),
+            live_token=None, progress=True):
     """Aggregate each snapshot, with every series folded into one map.
 
     Series share one pool/, so a snapshot has to be aggregated whole rather
@@ -403,8 +412,11 @@ def collect(builder, snaps, series_list, separate=(), progress=True):
     started = time.time()
     # The main tier's key covers series_list alone, so the separate tier can
     # gain or lose a series without invalidating any of it.
+    # The live token is part of the key because it is the only thing pinning
+    # down content a snapshot stamp cannot vouch for.
     key = aggregate_key(series_list, builder.components, builder.arches,
-                        builder.pockets, builder.sources)
+                        builder.pockets, builder.sources,
+                        extra=live_token if live_names else None)
     # series_list is a prefix of this, so every mask the main tier has already
     # cached still means what it meant.
     all_series = list(series_list) + [s for s in separate
@@ -415,7 +427,9 @@ def collect(builder, snaps, series_list, separate=(), progress=True):
             cls_table, flav_table, idx_table, here = cached
         else:
             cls_table, flav_table, idx_table, here, partial = \
-                aggregate_snapshot(builder, snap, series_list)
+                aggregate_snapshot(builder, snap, series_list,
+                                   live_names=live_names,
+                                   live_token=live_token)
             # Never cache a run that could not read everything it wanted: an
             # --offline miss looks exactly like a series that does not exist
             # yet, and would be indistinguishable once written down.
@@ -456,7 +470,7 @@ def collect(builder, snaps, series_list, separate=(), progress=True):
 
 
 def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None,
-           live=None):
+           live_names=()):
     """Pack the tables into dimension dictionaries plus flat integer rows.
 
     The series dimension is a bitmask over series_list, not an index, so the
@@ -536,7 +550,10 @@ def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None,
         # archive and reported as of now.  Deliberately not in the tables
         # above: they have no history, and inventing one by attaching them to
         # the newest snapshot would put a step in every total.
-        "live": {"source": ARCHIVE_BASE, "series": live} if live else None,
+        # Which series came from the live archive rather than from a
+        # snapshot, so the page can say their history is the present held
+        # constant.
+        "liveSeries": [s for s in kept if s in set(live_names)] or None,
         # When each series left the mirror, for the page to explain why its
         # line stops.  Only the ones actually drawn.
         "mirrorRemoved": {s: MIRROR_REMOVED[s][1] for s in kept
@@ -642,16 +659,24 @@ def cmd_build(args):
     builder = make_builder(args)
     snaps = snapshots(args.from_, args.to, args.every)
     series_list, separate = requested_series(args.series)
-    all_series = series_list + [s for s in separate if s not in series_list]
+    # Series read from the live archive go on the end, so the twelve keep the
+    # bit positions every cached aggregate was numbered from.
+    live_names = [] if args.series else [s for s in LIVE_SERIES
+                                         if s not in series_list]
+    token = live_token(builder, live_names, args.refresh_live)
+    if token is None:
+        live_names = []
+    all_series = (series_list + [s for s in separate if s not in series_list]
+                  + live_names)
     log("%d snapshot(s) x %d candidate series%s; cache at %s"
         % (len(snaps), len(all_series),
-           " (%s aggregated separately)" % " ".join(separate) if separate
+           " (%s from the live archive)" % " ".join(live_names) if live_names
            else "", args.cache))
 
     mirrored = mirror_series(builder, all_series)
-    live = live_totals(builder, [] if args.series else LIVE_SERIES)
-    byclass, byflavour, byindex, seen = collect(builder, snaps, series_list,
-                                                separate=separate)
+    byclass, byflavour, byindex, seen = collect(
+        builder, snaps, series_list + live_names, separate=separate,
+        live_names=live_names, live_token=token)
     if not byclass:
         log("nothing collected -- wrong window, or an --offline run with a "
             "cold cache")
@@ -663,7 +688,7 @@ def cmd_build(args):
             % (dropped / 2 ** 30,
                ", ".join(s for s in all_series if s in MIRROR_REMOVED)))
     data = encode(byclass, byflavour, byindex, snaps, all_series,
-                  mirrored=mirrored, live=live)
+                  mirrored=mirrored, live_names=live_names)
     log("collected %d class rows, %d flavour rows, %d index rows across %s"
         % (len(data["byClass"]["rows"]) // 9,
            len(data["byFlavour"]["rows"]) // 8,
@@ -941,6 +966,10 @@ def main():
                    help="HTML output (default: %(default)s)")
     p.add_argument("--json", metavar="FILE",
                    help="also write the raw dataset here")
+    p.add_argument("--refresh-live", action="store_true",
+                   help="re-read the series the snapshot service does not "
+                        "carry from the live archive; they are pinned "
+                        "otherwise, since a change re-aggregates everything")
     p.add_argument("--from-json", dest="from_json", metavar="FILE",
                    help="re-render the page from a dataset written by --json, "
                         "skipping the cache entirely; handy after editing "
