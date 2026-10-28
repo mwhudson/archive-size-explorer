@@ -25,12 +25,15 @@ import re
 import sys
 import time
 
+import requests
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from kernel_sizes import (  # noqa: E402
-    Builder, Cache, Fetcher, CANDIDATE_SERIES, DEFAULT_COMPONENTS, OTHER,
-    POCKETS, aggregate, aggregate_key, count_index, default_cache_dir,
-    kernel_predicate, log, merge_rows, snapshots,
+    ARCHIVE_BASE, Builder, Cache, Fetcher, CANDIDATE_SERIES,
+    DEFAULT_COMPONENTS, MIRROR_MAX_AGE, OTHER, POCKETS, aggregate,
+    aggregate_key, count_index, default_cache_dir, kernel_predicate, log,
+    merge_rows, probe_mirror, snapshots,
 )
 
 
@@ -94,12 +97,55 @@ class OfflineFetcher:
     jobs = 1
     bytes_downloaded = 0
 
-    def get(self, url, tolerate_404=True):
+    def get(self, url, tolerate_404=True, head=False):
+        raise SkipOffline(url)
+
+    def exists(self, url):
         raise SkipOffline(url)
 
 
 class SkipOffline(Exception):
     pass
+
+
+def mirror_series(builder, series_list):
+    """Which of series_list the live archive still carries.
+
+    Cached for MIRROR_MAX_AGE, so this costs a dozen requests once a week
+    rather than once a build.  Returns None when there is no answer to be had
+    -- an --offline run that has never probed -- which leaves the page to fall
+    back to guessing from the snapshot data.
+    """
+    cached = builder.cache.get_mirror()
+    fresh = (cached is not None and cached[1] <= MIRROR_MAX_AGE
+             and all(s in cached[0] for s in series_list))
+    if fresh:
+        kept = [s for s in series_list if cached[0][s]]
+        log("mirror probe %.1f days old, not renewing: %d of %d series still "
+            "carried (%s)"
+            % (cached[1] / 86400.0, len(kept), len(series_list),
+               " ".join(kept)))
+        return kept
+    try:
+        present = probe_mirror(builder.fetcher, series_list)
+    except (SkipOffline, requests.RequestException) as e:
+        # The probe is a nicety -- it decides what the page opens with, not
+        # what it holds -- so a sulking archive must not take a build down.
+        if cached is None or not all(s in cached[0] for s in series_list):
+            log("no usable mirror probe (%s): the page will fall back to "
+                "guessing which series are still carried"
+                % ("offline" if isinstance(e, SkipOffline) else e))
+            return None
+        log("mirror probe is %.0f days old and could not be renewed (%s), "
+            "using it anyway"
+            % (cached[1] / 86400.0,
+               "offline" if isinstance(e, SkipOffline) else e))
+        return [s for s in series_list if cached[0][s]]
+    builder.cache.put_mirror(present)
+    kept = [s for s in series_list if present[s]]
+    log("mirror probe: %d of %d series still on %s (%s)"
+        % (len(kept), len(present), ARCHIVE_BASE, " ".join(kept)))
+    return kept
 
 
 def tally_indexes(cache, plans, is_kernel, into):
@@ -208,7 +254,7 @@ def collect(builder, snaps, series_list, progress=True):
     return byclass, byflavour, byindex, sorted(seen)
 
 
-def encode(byclass, byflavour, byindex, snaps, series_list):
+def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None):
     """Pack the tables into dimension dictionaries plus flat integer rows.
 
     The series dimension is a bitmask over series_list, not an index, so the
@@ -265,11 +311,20 @@ def encode(byclass, byflavour, byindex, snaps, series_list):
                      arch_i[arch], comp_i[comp], pocket_i[pocket],
                      acc[0], acc[1], acc[2], acc[3]]
 
+    # Which series the live archive still carries, for the page to open with.
+    # Narrowed to the series that actually turned up, since those are all the
+    # page has chips for.  None means the build had no probe to go on, and the
+    # page should fall back to guessing.
+    if mirrored is not None:
+        still_there = set(mirrored)
+        mirrored = [s for s in kept if s in still_there]
+
     return {
         "generated": datetime.datetime.now(
             datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ"),
         "otherClass": OTHER,
         "pockets": POCKETS,
+        "mirrored": mirrored,
         "dims": {
             "snapshots": used_snaps,
             "series": kept,
@@ -374,12 +429,14 @@ def cmd_build(args):
     log("%d snapshot(s) x %d candidate series; cache at %s"
         % (len(snaps), len(series_list), args.cache))
 
+    mirrored = mirror_series(builder, series_list)
     byclass, byflavour, byindex, seen = collect(builder, snaps, series_list)
     if not byclass:
         log("nothing collected -- wrong window, or an --offline run with a "
             "cold cache")
         return 1
-    data = encode(byclass, byflavour, byindex, snaps, series_list)
+    data = encode(byclass, byflavour, byindex, snaps, series_list,
+                  mirrored=mirrored)
     log("collected %d class rows, %d flavour rows, %d index rows across %s"
         % (len(data["byClass"]["rows"]) // 9,
            len(data["byFlavour"]["rows"]) // 8,

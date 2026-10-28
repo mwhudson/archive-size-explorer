@@ -234,6 +234,7 @@ async function loadData() {
   const out = {
     generated: PAYLOAD.generated, otherClass: PAYLOAD.otherClass,
     pockets: PAYLOAD.pockets, dims: PAYLOAD.dims,
+    mirrored: PAYLOAD.mirrored,
   };
   for (const t of PAYLOAD.tables) {
     const n = t.rows, stride = t.stride;
@@ -392,12 +393,40 @@ function split() {
 
 /* ------------------------------------------------------------------ state */
 
-// The series that are still moving.  "Present at the most recent snapshot" is
-// no use as a test: the snapshot service keeps EOL suites served forever,
-// frozen at whatever they held on their last day, so kinetic is just as
-// present in 2026 as noble is.  A series that has not changed size since the
-// snapshot before is one of those fossils, and is left unticked.
+// The series a mirror still has to carry, which is what the page opens with.
+//
+// This is not a question the snapshot data can answer.  The snapshot service
+// keeps EOL suites served forever, frozen at whatever they held on their last
+// day, so kinetic is just as present in 2026 as noble is -- every candidate
+// series answers 200 at the latest snapshot.  The build asks the live archive
+// instead and records the answer in DATA.mirrored.
+//
+// Note that "still carried" is deliberately wider than "still being published
+// to": a series goes EOL, stops changing, and is only removed from the
+// archive some months later, and in that gap it is costing mirror bytes
+// without moving.  Those are exactly the ones a size-based test would miss in
+// the other direction too -- the ESM series publish without changing their
+// total measurably, so they look frozen and are not.
 function activeSeries() {
+  if (DATA.mirrored && DATA.mirrored.length) {
+    const want = new Set(DATA.mirrored);
+    const picked = new Set();
+    D.series.forEach((name, i) => { if (want.has(name)) picked.add(i); });
+    if (picked.size) return capped(picked);
+  }
+  return guessedActiveSeries();
+}
+
+// Never open with more lines than there are colours: beyond SLOTS they are
+// selected but undrawn, which looks like a bug rather than a choice.  Keeps
+// the newest, by series index.
+function capped(picked) {
+  return new Set([...picked].sort((a, b) => b - a).slice(0, SLOTS));
+}
+
+// The fallback for a dataset built without a mirror probe: a series that has
+// not changed size since the snapshot before is taken for a fossil.
+function guessedActiveSeries() {
   const last = D.snapshots.length - 1;
   const rows = DATA.byClass.rows;
   const now = new Array(D.series.length).fill(0);
@@ -417,7 +446,7 @@ function activeSeries() {
   const candidates = active.length
     ? active
     : now.map((v, i) => (v ? i : -1)).filter(i => i >= 0);
-  const picked = new Set(candidates.sort((a, b) => b - a).slice(0, SLOTS));
+  const picked = capped(new Set(candidates));
   return picked.size ? picked : new Set(D.series.map((_, i) => i));
 }
 
@@ -1065,9 +1094,8 @@ function buildFilters() {
   host.appendChild(chipRow("Series", D.series, state.series, toggler(state.series),
                            i => seriesColour(i),
                            [["select default",
-                             "the series still changing size at the most " +
-                             "recent snapshot, which is what the page opens " +
-                             "with",
+                             "the series the live archive still carries, " +
+                             "which is what the page opens with",
                              () => setTo(state.series, DEFAULTS.series)]]));
   host.appendChild(chipRow("Arch", D.arches, state.arch, toggler(state.arch),
                            i => archColour(i)));

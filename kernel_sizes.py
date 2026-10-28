@@ -35,6 +35,20 @@ SNAPSHOT_BASE = "https://snapshot.ubuntu.com/ubuntu"
 # The snapshot service only goes back this far (see https://snapshot.ubuntu.com/).
 SNAPSHOT_EPOCH = "20230301T000000Z"
 
+# The live archive, which is a different question from the snapshot service.
+# Which series a mirror still carries cannot be read out of snapshot data at
+# all: snapshot.ubuntu.com serves every suite it has ever seen, frozen at
+# whatever it held on its last day, so a series moved to
+# old-releases.ubuntu.com years ago still answers 200 there.  Only the archive
+# itself knows, so that is who gets asked.
+ARCHIVE_BASE = "https://archive.ubuntu.com/ubuntu"
+
+# How long a mirror probe stays good.  Series leave the archive a handful of
+# times a year, and months after they go EOL rather than on the day, so a week
+# is fresh enough to notice a removal well inside a release cycle while
+# keeping the probe off the critical path of an ordinary rebuild.
+MIRROR_MAX_AGE = 7 * 86400
+
 # How long to keep trying when the archive is having a bad day.  The service
 # fails in bursts: whole minutes where large objects come back 502/503/504
 # while small ones serve fine, then an uneven recovery where individual suites
@@ -132,6 +146,39 @@ class Cache:
         with gzip.open(tmp, "wt") as f:
             for k in sorted(entries):
                 f.write("%s\t%s\t%d\n" % (k, entries[k][0], entries[k][1]))
+        os.replace(tmp, path)
+
+    def mirror_path(self):
+        return self._path("mirror", "series.tsv")
+
+    def get_mirror(self):
+        """({series: still on the archive}, age in seconds), or None.
+
+        Unlike everything else in here this is not keyed by snapshot: it is a
+        fact about the archive right now, not about a point in history, and
+        there is exactly one of it.
+        """
+        path = self.mirror_path()
+        try:
+            age = time.time() - os.path.getmtime(path)
+        except OSError:
+            return None
+        present = {}
+        with open(path) as f:
+            for line in f:
+                name, _, flag = line.rstrip("\n").partition("\t")
+                if name and flag in ("0", "1"):
+                    present[name] = flag == "1"
+        return (present, age) if present else None
+
+    def put_mirror(self, present):
+        """Record a probe result: {series: still on the archive}."""
+        path = self.mirror_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        with open(tmp, "w") as f:
+            for name in sorted(present):
+                f.write("%s\t%d\n" % (name, 1 if present[name] else 0))
         os.replace(tmp, path)
 
     def aggregate_path(self, snapshot, key):
@@ -242,11 +289,12 @@ class Fetcher:
                 pass       # absent, or an HTTP-date we are not going to parse
         time.sleep(delay * (0.5 + random.random()))
 
-    def get(self, url, tolerate_404=True):
+    def get(self, url, tolerate_404=True, head=False):
         last = HTTP_ATTEMPTS - 1
         for attempt in range(HTTP_ATTEMPTS):
             try:
-                r = self.session.get(url, timeout=180)
+                r = (self.session.head(url, timeout=180) if head
+                     else self.session.get(url, timeout=180))
             except requests.RequestException as e:
                 if attempt == last:
                     raise
@@ -266,6 +314,31 @@ class Fetcher:
                 self.bytes_downloaded += len(r.content)
             return r.content
         raise RuntimeError("unreachable")
+
+    def exists(self, url):
+        """Whether the server has this, without downloading it.
+
+        A Release is a quarter of a megabyte and the status code is the whole
+        answer, so this asks for the headers alone.
+        """
+        return self.get(url, head=True) is not None
+
+
+def probe_mirror(fetcher, series):
+    """Which of these series the live archive still carries.
+
+    One HEAD each for dists/<series>/Release, which exists for every series
+    that has ever been published and disappears when the series is moved off
+    to old-releases.ubuntu.com.  A dozen requests, so this stays serial.
+
+    Note what this does and does not say.  A series here is one a mirror still
+    has to find room for, which is not the same as one still being published
+    to: a series goes EOL, stops changing, and is only removed from the
+    archive months later, so the two sets differ by however many are in that
+    gap at the time of asking.
+    """
+    return {name: fetcher.exists("%s/dists/%s/Release" % (ARCHIVE_BASE, name))
+            for name in series}
 
 
 # ---------------------------------------------------------------- parsing

@@ -13,12 +13,29 @@ it to someone, stick it on people.canonical.com. Series, architecture, pocket
 and component are all filters in the page, so you explore by clicking rather
 than by re-running the script.
 
-The page opens with the series that are still changing size ticked, and the
-fossils — EOL suites the snapshot service keeps serving forever, frozen at
-whatever they held on their last day — left alone. **select default** on the
-series row puts that selection back once you have clicked around, and **Reset**
-in the header puts every filter and control back to how the page opened, without
-moving you off the tab you are on.
+The page opens with the series a mirror still has to carry ticked, and the ones
+that have been moved off to old-releases.ubuntu.com left alone. **select
+default** on the series row puts that selection back once you have clicked
+around, and **Reset** in the header puts every filter and control back to how
+the page opened, without moving you off the tab you are on.
+
+Which series those are cannot be read out of the snapshot data, which is worth
+knowing if you are tempted to derive it: the snapshot service keeps every suite
+it has ever seen, frozen at whatever it held on its last day, so `dists/kinetic`
+answers 200 at today's snapshot just as `dists/noble` does, three years after
+kinetic left the archive. `build` therefore asks the live archive — one HEAD per
+candidate series, cached for a week, so it costs a dozen requests occasionally
+rather than on every rebuild. A dataset built without a probe (`--offline` with
+a cold cache) falls back to guessing from the data: a series whose total has not
+moved since the previous snapshot is taken for a fossil.
+
+That fallback is a guess, and it is wrong in both directions, which is why the
+probe exists. It misses the ESM series, because bionic and focal publish without
+their totals moving measurably — bionic came out byte-identical across two
+consecutive weekly snapshots — so they look frozen when they are not. And it is
+narrower than the question anyway: a series goes EOL, stops changing, and is
+only removed from the archive months later, so plucky and questing are costing
+mirror bytes right now while sitting perfectly still.
 
 There are three things it will tell you: how much of the archive is kernels,
 how big the archive is, and how big the package lists are. The **Whole archive**
@@ -146,9 +163,10 @@ carry *different* upstream versions of `libcublas-13-1` (13.2.1.1 and 13.2.2.2),
 so each series pays for its own copy.
 
 Read the share column rather than the growth one. The archive grows on its own
-as series pile up — the snapshot service never drops an EOL suite — so an
-absolute multiplier flatters every row alike; a family is only worth worrying
-about if it is outgrowing the thing it sits in.
+as series pile up — the snapshot service never drops an EOL suite, and the real
+archive keeps them for months past EOL — so an absolute multiplier flatters
+every row alike; a family is only worth worrying about if it is outgrowing the
+thing it sits in.
 
 `--offline` re-aggregates whatever is already cached without touching the
 network, which is the fast way to try a different slice of the same data. A
@@ -362,6 +380,14 @@ enough that the bitwise pocket and series filters still work on them. That is
 also faster than what it replaces: a JSON literal that large has to go through
 the JavaScript parser before anything can be drawn, which costs more than the
 gunzip and the varints together.
+
+One thing in the cache is not keyed by snapshot at all: the mirror probe, which
+is a fact about the archive now rather than about a point in history. It holds
+one line per candidate series and is re-probed when it is more than a week old,
+so a rebuild normally reads it and asks nothing. When it cannot be renewed —
+`--offline`, or the archive refusing to answer — a stale copy is used in
+preference to no answer, and only a cold cache with no network leaves the page
+guessing.
 
 The `Release` files are cached too, as `path -> (checksum, size)`. The size
 column is what the Package lists tab runs on, and it is the only record of it:
