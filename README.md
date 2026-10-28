@@ -27,6 +27,22 @@ does the same for `dists/` rather than `pool/`; the other tabs break the archive
 down. A "one line per" control switches the charts between a line per series and
 a line per architecture.
 
+**Lines show** switches every line chart between totals and the change since
+the previous snapshot. Totals answer "how big is it"; change answers "what just
+happened", and the two are not equally easy to read off one line. With the
+series the page opens with, the archive *shed* 890 GiB between the 2026-06 and
+2026-07 monthly snapshots — a step that is easy to miss in a curve that mostly
+goes up, and an unmissable spike below the zero line in the change view. The
+weekly page narrows the same event to the single week ending 2026-06-17.
+
+Two things to know about reading it. The interval is whatever the snapshot
+spacing is, and monthly snapshots are not all the same length, so a monthly
+change chart is per-month and not per-day. And the first snapshot of each line
+is not drawn: differencing it against nothing is meaningless, and treating a
+series' first appearance as a change equal to its whole size would flatten
+every real movement on the chart against that one spike. On a share chart the
+unit becomes percentage points rather than percent.
+
 ## Using it
 
 ```console

@@ -431,6 +431,7 @@ const DEFAULTS = {
   comp: new Set(D.components.map((_, i) => i)),
   metric: "size",
   splitBy: "series",
+  shown: "total",
   snap: D.snapshots.length - 1,
 };
 
@@ -447,6 +448,7 @@ const state = {
   comp: new Set(DEFAULTS.comp),
   metric: DEFAULTS.metric,
   splitBy: DEFAULTS.splitBy,
+  shown: DEFAULTS.shown,
   view: "time",
   snap: DEFAULTS.snap,
 };
@@ -460,6 +462,7 @@ function resetDefaults() {
   setTo(state.comp, DEFAULTS.comp);
   state.metric = DEFAULTS.metric;
   state.splitBy = DEFAULTS.splitBy;
+  state.shown = DEFAULTS.shown;
   state.snap = DEFAULTS.snap;
 }
 
@@ -469,7 +472,10 @@ function bytes(n) {
   const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
   let u = 0;
   while (Math.abs(n) >= 1024 && u < units.length - 1) { n /= 1024; u++; }
-  return (n >= 100 || u === 0 ? n.toFixed(0) : n.toFixed(1)) + " " + units[u];
+  // Magnitude decides the precision, so that a negative change is written to
+  // the same number of places as the positive one above it on the axis.
+  return (Math.abs(n) >= 100 || u === 0 ? n.toFixed(0) : n.toFixed(1)) +
+         " " + units[u];
 }
 function pct(n) { return (n * 100).toFixed(1) + "%"; }
 // Some of these are genuinely tiny -- the package lists are 0.016% of the
@@ -479,9 +485,21 @@ function pctFine(n) {
   return (v >= 1 ? v.toFixed(1) : v >= 0.1 ? v.toFixed(2) : v.toFixed(3)) + "%";
 }
 function count(n) { return n.toLocaleString(); }
+/** A change needs its sign spelled out, including the one a formatter would
+    not print: "+1.4 GiB" reads as a movement where "1.4 GiB" reads as a size. */
+function signed(v, fmt) { return (v > 0 ? "+" : "") + fmt(v); }
 function stamp(s) { return s.slice(0, 4) + "-" + s.slice(4, 6) + "-" + s.slice(6, 8); }
 function snapDate(s) { return new Date(stamp(s) + "T00:00:00Z"); }
 function shortStamp(s) { return s.slice(0, 4) + "-" + s.slice(4, 6); }
+/** Days between the last two snapshots, so the change view can say what one
+    interval actually is.  "Per snapshot" means nothing on its own, and the
+    same page gets built at monthly and at weekly resolution. */
+function snapSpacing() {
+  const s = D.snapshots;
+  if (s.length < 2) return 0;
+  const utc = x => Date.UTC(+x.slice(0, 4), +x.slice(4, 6) - 1, +x.slice(6, 8));
+  return Math.round((utc(s[s.length - 1]) - utc(s[s.length - 2])) / 86400000);
+}
 
 /* -------------------------------------------------------------- scanning */
 
@@ -684,6 +702,39 @@ function ticks(max, want) {
   return out;
 }
 
+/** Nice round ticks covering a range that may straddle zero.
+
+    Same idea of a nice step as ticks(), but the ladder is built from multiples
+    of that step instead of counting up from zero, so a range that crosses zero
+    always lands a tick exactly on it -- which is the line the change view gets
+    read against.
+ */
+function spanTicks(lo, hi, want) {
+  if (!(hi > lo)) { lo = Math.min(0, lo) - 1; hi = Math.max(0, hi) + 1; }
+  const raw = (hi - lo) / want;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw) || mag * 10;
+  const out = [];
+  for (let i = Math.floor(lo / step + 1e-9); i <= Math.ceil(hi / step - 1e-9); i++) {
+    out.push(i * step);
+  }
+  return out;
+}
+
+/** Point-to-point differences, for the change view.
+
+    A point whose predecessor is missing becomes null rather than being
+    differenced against nothing.  A series that starts mid-window would
+    otherwise show its entire size as a one-off spike on its first snapshot,
+    which flattens every real movement in the chart against it.
+ */
+function deltas(points) {
+  return points.map((v, i) => {
+    const prev = i ? points[i - 1] : null;
+    return (v === null || prev === null) ? null : v - prev;
+  });
+}
+
 const tooltip = document.getElementById("tooltip");
 function showTip(html, x, y) {
   tooltip.innerHTML = html;
@@ -705,22 +756,42 @@ function lineChart(host, opts) {
   const pad = { top: 12, right: 96, bottom: 30, left: 62 };
   const plotW = width - pad.left - pad.right;
   const plotH = height - pad.top - pad.bottom;
+  // Differencing happens here rather than at every call site, so the one
+  // toggle reaches all of these charts at once.
+  const change = state.shown === "change";
+  const series = change ? opts.series.map(s => ({
+    name: s.name, colour: s.colour, points: deltas(s.points),
+  })) : opts.series;
+  const fmt = change ? (opts.diffFmt || (v => signed(v, opts.fmt))) : opts.fmt;
+
   const svg = el("svg", { width, height, viewBox: "0 0 " + width + " " + height,
-                          role: "img", "aria-label": opts.title || "chart" });
+                          role: "img",
+                          "aria-label": (opts.title || "chart") +
+                                        (change ? ", change per snapshot" : "") });
 
   const xs = opts.x;
-  const maxY = Math.max(opts.minMax || 0, ...opts.series.flatMap(
-    s => s.points.map(p => (p === null ? 0 : p))));
-  const yTicks = ticks(maxY, 5);
+  const vals = series.flatMap(s => s.points.filter(p => p !== null));
+  // Zero stays in range either way: a change chart is unreadable without the
+  // line it is measured against.  minMax is a floor for totals only -- it is
+  // there to stop a flat share chart filling the plot with noise, and a change
+  // chart has its own floor in the zero line.
+  const maxY = Math.max(change ? 0 : (opts.minMax || 0), 0, ...vals);
+  const yTicks = change ? spanTicks(Math.min(0, ...vals), maxY, 5) : ticks(maxY, 5);
+  const lo = yTicks[0];
   const top = yTicks[yTicks.length - 1] || 1;
   const X = i => pad.left + (xs.length === 1 ? plotW / 2 : plotW * i / (xs.length - 1));
-  const Y = v => pad.top + plotH - plotH * (v / top);
+  // Scales from lo rather than from zero.  Written so that lo == 0 -- every
+  // chart showing totals -- reduces to exactly the old expression, including
+  // the order of the arithmetic: a chart that has not changed should not move
+  // by a rounding bit.
+  const span = (top - lo) || 1;
+  const Y = v => pad.top + plotH - plotH * ((v - lo) / span);
 
   for (const t of yTicks) {
     el("line", { x1: pad.left, x2: pad.left + plotW, y1: Y(t), y2: Y(t),
                  stroke: "var(--grid)", "stroke-width": 1 }, svg);
     const label = el("text", { x: pad.left - 8, y: Y(t) + 4, "text-anchor": "end" }, svg);
-    label.textContent = opts.fmt(t);
+    label.textContent = fmt(t);
   }
   // x labels: thin them out so they never collide
   const every = Math.max(1, Math.ceil(xs.length / (plotW / 62)));
@@ -732,7 +803,7 @@ function lineChart(host, opts) {
   el("line", { x1: pad.left, x2: pad.left + plotW, y1: Y(0), y2: Y(0),
                stroke: "var(--axis)", "stroke-width": 1 }, svg);
 
-  for (const s of opts.series) {
+  for (const s of series) {
     let d = "", pen = false;
     s.points.forEach((v, i) => {
       if (v === null) { pen = false; return; }
@@ -767,10 +838,10 @@ function lineChart(host, opts) {
     hair.setAttribute("x2", X(i));
     hair.setAttribute("opacity", 1);
     let html = '<div class="tt-title">' + opts.xTitle(i) + "</div>";
-    for (const s of opts.series) {
+    for (const s of series) {
       if (s.points[i] === null) continue;
       html += '<div class="tt-row"><span style="color:' + s.colour + '">●</span>' +
-              "<span>" + s.name + "</span><span>" + opts.fmt(s.points[i]) + "</span></div>";
+              "<span>" + s.name + "</span><span>" + fmt(s.points[i]) + "</span></div>";
     }
     showTip(html, ev.clientX, ev.clientY);
   });
@@ -876,6 +947,30 @@ function toggler(set) {
   return i => { if (set.has(i)) set.delete(i); else set.add(i); };
 }
 
+/** A row of mutually exclusive chips bound to one field of state. */
+function pickRow(label, choices, field) {
+  const row = document.createElement("div");
+  row.className = "frow";
+  const lab = document.createElement("div");
+  lab.className = "flabel";
+  lab.textContent = label;
+  row.appendChild(lab);
+  const chips = document.createElement("div");
+  chips.className = "chips";
+  for (const choice of choices) {
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.type = "button";
+    b.textContent = choice[1];
+    if (choice[2]) b.title = choice[2];
+    b.setAttribute("aria-pressed", state[field] === choice[0] ? "true" : "false");
+    b.addEventListener("click", () => { state[field] = choice[0]; render(); });
+    chips.appendChild(b);
+  }
+  row.appendChild(chips);
+  return row;
+}
+
 function buildFilters() {
   const host = document.getElementById("filters");
   host.innerHTML = "";
@@ -891,45 +986,15 @@ function buildFilters() {
   host.appendChild(chipRow("Pocket", DATA.pockets, state.pocket, toggler(state.pocket)));
   host.appendChild(chipRow("Component", D.components, state.comp, toggler(state.comp)));
 
-  const row = document.createElement("div");
-  row.className = "frow";
-  const lab = document.createElement("div");
-  lab.className = "flabel";
-  lab.textContent = "Measure";
-  row.appendChild(lab);
-  const chips = document.createElement("div");
-  chips.className = "chips";
-  [["size", "Download size"], ["isize", "Installed size"]].forEach(pair => {
-    const b = document.createElement("button");
-    b.className = "chip";
-    b.type = "button";
-    b.textContent = pair[1];
-    b.setAttribute("aria-pressed", state.metric === pair[0] ? "true" : "false");
-    b.addEventListener("click", () => { state.metric = pair[0]; render(); });
-    chips.appendChild(b);
-  });
-  row.appendChild(chips);
-  host.appendChild(row);
-
-  const lines = document.createElement("div");
-  lines.className = "frow";
-  const llab = document.createElement("div");
-  llab.className = "flabel";
-  llab.textContent = "One line per";
-  lines.appendChild(llab);
-  const lchips = document.createElement("div");
-  lchips.className = "chips";
-  [["series", "Series"], ["arch", "Architecture"]].forEach(pair => {
-    const b = document.createElement("button");
-    b.className = "chip";
-    b.type = "button";
-    b.textContent = pair[1];
-    b.setAttribute("aria-pressed", state.splitBy === pair[0] ? "true" : "false");
-    b.addEventListener("click", () => { state.splitBy = pair[0]; render(); });
-    lchips.appendChild(b);
-  });
-  lines.appendChild(lchips);
-  host.appendChild(lines);
+  host.appendChild(pickRow("Measure", [["size", "Download size"],
+                                       ["isize", "Installed size"]], "metric"));
+  host.appendChild(pickRow("One line per", [["series", "Series"],
+                                            ["arch", "Architecture"]], "splitBy"));
+  host.appendChild(pickRow("Lines show", [
+    ["total", "Totals", "the value at each snapshot"],
+    ["change", "Change", "the difference from the snapshot before, so the " +
+                         "charts read as a rate rather than a level"],
+  ], "shown"));
 }
 
 /* ------------------------------------------------------------------- views */
@@ -970,6 +1035,7 @@ function viewTime(host, tl) {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
     fmt: v => v.toFixed(0) + "%",
+    diffFmt: v => signed(v, x => x.toFixed(1) + " pp"),
     minMax: 10,
     series: shareLines.series,
   });
@@ -1237,6 +1303,7 @@ function viewArchive(host) {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
     fmt: v => v.toFixed(0) + "%",
+    diffFmt: v => signed(v, x => x.toFixed(1) + " pp"),
     minMax: 10,
     height: 240,
     series: [{ name: "kernel share", colour: "var(--s1)",
@@ -1432,6 +1499,7 @@ function viewLists(host) {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
     fmt: v => v.toFixed(0) + "%",
+    diffFmt: v => signed(v, x => x.toFixed(1) + " pp"),
     minMax: 10,
     height: 260,
     series: [
@@ -1454,6 +1522,7 @@ function viewLists(host) {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
     fmt: v => v.toFixed(0) + "%",
+    diffFmt: v => signed(v, x => x.toFixed(1) + " pp"),
     minMax: 10,
     height: 260,
     series: pocketShare.series,
@@ -1470,6 +1539,7 @@ function viewLists(host) {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
     fmt: v => v.toFixed(0) + "%",
+    diffFmt: v => signed(v, x => x.toFixed(1) + " pp"),
     minMax: 10,
     height: 260,
     series: compShare.series,
@@ -1612,6 +1682,20 @@ function render() {
     host.innerHTML = '<div class="card"><div class="empty">' +
       "Select at least one of each filter.</div></div>";
     return;
+  }
+  if (state.shown === "change" && state.view !== "breakdown" &&
+      state.view !== "table") {
+    const bar = document.createElement("div");
+    bar.className = "cardsub";
+    bar.style.margin = "0 0 14px";
+    const days = snapSpacing();
+    bar.textContent =
+      "Every line below is the change since the previous snapshot" +
+      (days ? ", about " + days + " days" : "") + ", rather than a total. A " +
+      "point above the zero line grew over that interval, one below it " +
+      "shrank. The first snapshot of a line has nothing to difference " +
+      "against, so it is not drawn.";
+    host.appendChild(bar);
   }
   if (state.view === "lists") viewLists(host);
   else if (state.view === "archive") viewArchive(host);
