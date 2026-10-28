@@ -126,11 +126,25 @@ $ ./kernel-sizes-explorer build --json data.json -o kernels.html
 $ ./kernel-sizes-explorer build --from-json data.json -o kernels.html   # instant
 ```
 
-`cache` says how much disk the cache is using; deleting the directory is safe.
+`cache` says how much disk the cache is using. Deleting the directory is safe
+for *correctness* -- everything in it can be refetched -- but it is not cheap,
+so read the next paragraph before reaching for `rm -rf`.
 
-For scale: the full default run is 43 monthly snapshots across 12 series, which
-was 12.5 GB of downloads, 873 MiB of cache (of which 4.0 MiB is the
-aggregates), and a 1.3 MiB page.
+For scale, each measured from a cold cache: the monthly run, 12 series over 43
+snapshots as it was then, cost 12.5 GB of downloads and left 873 MiB behind.
+Weekly resolution over the same window, 186 snapshots at the time, cost about
+41 GiB across five and a half hours and left 3.7 GiB. The two slices share
+almost all of their blobs, so a cache holding both is barely bigger than the
+weekly one alone. None of that recurs once the cache is warm: topping a page up
+to today costs a couple of minutes per new snapshot, and re-rendering a
+different slice with `--offline` takes seconds.
+
+The cache honours `XDG_CACHE_HOME`, and otherwise lives in
+`~/.cache/kernel-sizes-explorer`. In the agent container that path is a symlink
+to `/aiab/cache/kernel-sizes-explorer`, which outlives the container -- the
+container's own `/home/ubuntu` does not, and is per-harness besides, so a cache
+left there is invisible to any other harness. See `/aiab/README.md`. If a build
+starts by fetching tens of thousands of blobs, that symlink has gone missing.
 
 ## What counts as a kernel
 
