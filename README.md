@@ -482,7 +482,20 @@ dropped is 48.9%.
 
 `archive_sizes.py` does the work; `archive-size-explorer` is the CLI;
 `template.html` is the page, with the dataset spliced into it as a small JSON
-header plus one packed blob.
+header plus one packed blob. `tests/` holds the page's tests, which run its
+JavaScript under a stub DOM in node — the tab row, the URL round trip, and
+where the explanatory prose lives:
+
+```console
+$ ./tests/check page.html
+notes: 55 ok, 0 failed
+tabs: 21 ok, 0 failed
+url: 23 ok, 0 failed
+```
+
+They want a built page rather than the template, since they run the page's own
+script over its own data. There is nothing to install: node 18 or newer, for
+`DecompressionStream`.
 
 The blob is a column store: each table's columns are written out one after
 another as varints, with the key columns delta-encoded against the row above.

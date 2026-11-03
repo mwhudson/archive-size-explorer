@@ -1,0 +1,33 @@
+#!/bin/sh
+# Copyright (C) 2026 Canonical Ltd.
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Run every page suite against one built page.
+#
+# The suites exercise the page's own JavaScript, so they need a page with real
+# data in it rather than the template:
+#
+#   ./archive-size-explorer build -o page.html     # or --from-json, for speed
+#   ./tests/check page.html
+#
+# Needs node 18 or newer, for DecompressionStream.  Every suite runs even if an
+# earlier one fails, because the three cover different things and seeing all of
+# it beats bisecting one run at a time.
+set -u
+
+page=${1-}
+if [ -z "$page" ]; then
+    echo "usage: ${0##*/} PAGE.html" >&2
+    exit 2
+fi
+if [ ! -f "$page" ]; then
+    echo "${0##*/}: no such page: $page" >&2
+    exit 2
+fi
+
+here=$(dirname "$0")
+rc=0
+for suite in notes tabs url; do
+    node "$here/$suite.js" "$page" || rc=1
+done
+exit $rc

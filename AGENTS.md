@@ -4,14 +4,41 @@ The README says what the tool does and how it works, and is the place for
 anything a *user* needs. This file is the rest: what is worth knowing before
 changing the code, most of it learned the hard way.
 
-## There is no test suite; run the page
+## The test suite, and the stub it runs on
 
 `template.html` is hand-written JavaScript with no build step and no
-framework, so the way to check a change is to execute it. Node plus a stub DOM
-is enough — about a hundred and thirty lines covering `createElement`,
-`appendChild`,
-`classList`, `dataset`, `querySelectorAll`, and shims for `location` and
-`history`.
+framework, so the way to check a change is to execute it. That is what
+`tests/` does, against a built page:
+
+```console
+$ ./archive-size-explorer build -o page.html
+$ ./tests/check page.html
+notes: 55 ok, 0 failed
+tabs: 21 ok, 0 failed
+url: 23 ok, 0 failed
+```
+
+A built page rather than the template, because the suites run the page's own
+script over its own data — `--from-json` is the quick way to get one without
+going near the cache. Needs node 18 or newer, for `DecompressionStream`. A
+failed check exits 1 and prints what it got against what it wanted; a suite
+that threw exits 2, which is a different kind of problem and usually the stub.
+Every suite runs even if an earlier one fails.
+
+* **`tabs.js`** pins the tab row: names, order, which one opens, and that each
+  tab renders and writes the `v=` it should.
+* **`url.js`** round-trips every control through `encodeState`/`applyHash`,
+  and checks that rubbish in the hash is survivable rather than fatal — these
+  links get pasted into bugs.
+* **`notes.js`** pins where the explanatory prose lives: that the collapsed
+  footer block says the right things, and that no chart has gone back to
+  repeating them.
+
+`tests/page.js` is the loader, `tests/stub.js` the DOM — about a hundred and
+thirty lines covering `createElement`, `appendChild`, `classList`, `dataset`,
+`querySelectorAll`, and shims for `location` and `history`. The rest of this
+section is why those two look the way they do, which is worth reading before
+extending either.
 
 Run both `<script>` blocks, in order, in one scope: the first carries
 `PAYLOAD` and the decoder, the second is the UI. Run them in Node's own realm
