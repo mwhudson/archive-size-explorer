@@ -212,10 +212,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 <div class="filters" id="filters"></div>
 
 <div class="tabs" role="tablist">
-  <button class="tab" role="tab" data-view="time" aria-selected="true">Over time</button>
+  <button class="tab" role="tab" data-view="archive" aria-selected="true">Whole archive</button>
+  <button class="tab" role="tab" data-view="time" aria-selected="false">Over time</button>
   <button class="tab" role="tab" data-view="breakdown" aria-selected="false">Breakdown</button>
   <button class="tab" role="tab" data-view="table" aria-selected="false">Table</button>
-  <button class="tab" role="tab" data-view="archive" aria-selected="false">Whole archive</button>
   <button class="tab" role="tab" data-view="lists" aria-selected="false">Package lists</button>
 </div>
 
@@ -524,6 +524,7 @@ const DEFAULTS = {
   rateWindow: 3,
   snap: D.snapshots.length - 1,
   filters: true,
+  view: "archive",
 };
 
 /** Refill a selection in place; the chip handlers close over the Set itself. */
@@ -541,7 +542,7 @@ const state = {
   splitBy: DEFAULTS.splitBy,
   shown: DEFAULTS.shown,
   rateWindow: DEFAULTS.rateWindow,
-  view: "time",
+  view: DEFAULTS.view,
   snap: DEFAULTS.snap,
   zoom: null,
   filters: DEFAULTS.filters,
@@ -585,7 +586,7 @@ function sameSet(a, b) {
 function encodeState() {
   const out = [];
   const set = (k, v) => out.push(k + "=" + v);
-  if (state.view !== "time") set("v", state.view);
+  if (state.view !== DEFAULTS.view) set("v", state.view);
   if (!sameSet(state.series, DEFAULTS.series))
     set("s", setNames(state.series, D.series));
   if (!sameSet(state.arch, DEFAULTS.arch))
@@ -614,7 +615,7 @@ function applyHash(hash) {
     const i = part.indexOf("=");
     if (i > 0) got.set(part.slice(0, i), decodeURIComponent(part.slice(i + 1)));
   }
-  const views = ["time", "breakdown", "table", "archive", "lists"];
+  const views = ["archive", "time", "breakdown", "table", "lists"];
   if (views.includes(got.get("v"))) state.view = got.get("v");
   if (got.has("s")) setTo(state.series, namesToSet(got.get("s"), D.series));
   if (got.has("a")) setTo(state.arch, namesToSet(got.get("a"), D.arches));
@@ -2143,7 +2144,7 @@ function updateTiles() {
 function render() {
   // The tab is removed at load for a dataset that predates the index table,
   // but do not make the dispatch depend on that having happened.
-  if (state.view === "lists" && !DATA.byIndex) state.view = "time";
+  if (state.view === "lists" && !DATA.byIndex) state.view = DEFAULTS.view;
   assignSlots();
   buildFilters();
   updateTiles();
@@ -2207,7 +2208,7 @@ function render() {
 if (!DATA.byIndex) {
   const stale = document.querySelector('.tab[data-view="lists"]');
   if (stale) stale.remove();
-  if (state.view === "lists") state.view = "time";
+  if (state.view === "lists") state.view = DEFAULTS.view;
 }
 
 document.querySelectorAll(".tab").forEach(t =>
@@ -2262,7 +2263,7 @@ window.addEventListener("resize", () => {
 window.addEventListener("hashchange", () => {
   if (writingHash) return;
   resetDefaults();
-  state.view = "time";
+  state.view = DEFAULTS.view;
   state.zoom = null;
   applyHash(location.hash);
   render();
