@@ -324,8 +324,8 @@ so they give the last publish rather than the removal. The dates in
 `dists/` autoindex, each entry being the last capture still showing the series
 and the first without it. By the same method precise went in 2021 and lucid
 earlier still, which is why neither needs adding: the series ever carried
-during the snapshot window are exactly the twelve candidates plus trusty and
-xenial.
+during the snapshot window are exactly the thirteen candidates plus trusty
+and xenial.
 
 Dropping a series does not drop all of its bytes. A pool file it shared with a
 series still carried is still on the mirror, so only what nobody else
@@ -507,18 +507,34 @@ lets the page compute an exact union for any combination of pockets you tick
 without going back to the raw data.
 
 The series dimension is a bitmask in exactly the same way, which is what lets
-any set of series be unioned rather than summed. Twelve series could in
-principle produce 4096 masks and an unusable row count, but only **93** of them
-actually occur, because sharing follows patterns: most files belong to one
-series, and almost all the rest to a run of consecutive ones. Carrying the mask
-costs about 25% more rows than one series per row would, and in exchange every
-selection is exact and there is only one table.
+any set of series be unioned rather than summed. Every subset of the candidate
+list is a possible mask — 8192 of them at thirteen series — which would be an
+unusable row count, but hardly any occur: at 2026-09, across the twelve series
+of the day, **93** did, because sharing follows patterns: most files belong to
+one series, and almost all the rest to a run of consecutive ones. Carrying the
+mask costs about 25% more rows than one series per row would, and in exchange
+every selection is exact and there is only one table.
 
 A bit in that mask is a *position* in the candidate series list, so the
 aggregate key is a hash of the whole list: insert a series anywhere but the end
 and every cached mask means something different, invalidating all of them.
-Append instead and the stored masks stay exactly correct — the key still
-changes, but migrating the cache is then a rename rather than a recomputation.
+Appending is meant to be the way round that: the stored masks stay exactly
+correct, and while the key still changes, migrating the cache is then a rename
+rather than a recomputation.
+
+It does not currently work out that way, because the list that gets numbered is
+not `CANDIDATE_SERIES` — `collect` is called with `series_list + live_names`,
+so trusty and xenial hold the two positions after the last candidate. Appending
+a candidate therefore inserts it *in front of* them and shifts both. Adding
+tenacious moved trusty from bit 12 to bit 13 and xenial from 13 to 14, which
+the cache shows plainly: in the 2023-03 aggregate every mask below 32 is
+byte-for-byte what it was, while the rows that read 4096 and 8192 now read 8192
+and 16384. Nothing is miscounted — the key changed too, so the stale entries
+are never read — but the migration is a mask rewrite rather than a rename, and
+in practice adding a series re-aggregates every snapshot. It does that from
+blobs that are already cached, so nothing is refetched and there is no network
+cost; it costs the aggregation time, which was about thirteen minutes for the
+monthly window and a couple of hours for the weekly one.
 `RELEASE_ORDER` is a separate list so that appending for the cache's sake
 cannot put a ten-year-old series at the newest end of the page: the candidate
 list's order is the cache's business, release order is the page's.

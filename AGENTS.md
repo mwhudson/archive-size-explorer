@@ -88,10 +88,16 @@ cold build costs. The operational points:
   and xenial out and still exits 0.** It is logged, but the reliable check is
   the series list in the output. Once the pin and the live blobs are warm,
   offline builds include them.
-* **Appending to `CANDIDATE_SERIES` is cheap; inserting is not.** The series
-  bitmask is positional, so inserting anywhere but the end invalidates every
-  cached aggregate. The README explains why; the practical rule is to append,
-  and to put the series in `RELEASE_ORDER` wherever it actually belongs.
+* **Adding a series costs a full re-aggregation, and not for the reason the
+  code suggests.** The series bitmask is positional, so a mask means nothing
+  except against the list it was numbered from — hence the rule to append to
+  `CANDIDATE_SERIES` and let `RELEASE_ORDER` say where the series really
+  belongs. But `collect` is called with `series_list + live_names`, so trusty
+  and xenial sit *after* the last candidate, and an append shifts them:
+  tenacious moved trusty from bit 12 to bit 13. Nothing is miscounted, since
+  the key changes too, but the cache cannot be migrated by rename and every
+  snapshot is recomputed. Nothing is refetched; budget the Long runs figures
+  below.
 
 ## Long runs
 

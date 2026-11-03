@@ -661,8 +661,10 @@ def cmd_build(args):
     builder = make_builder(args)
     snaps = snapshots(args.from_, args.to, args.every)
     series_list, separate = requested_series(args.series)
-    # Series read from the live archive go on the end, so the twelve keep the
-    # bit positions every cached aggregate was numbered from.
+    # Series read from the live archive go on the end, so the snapshot series
+    # keep the bit positions every cached aggregate was numbered from.  Note
+    # the corollary: it is these two that move when a candidate is appended,
+    # which is why an append still invalidates the cache.  See the README.
     live_names = [] if args.series else [s for s in LIVE_SERIES
                                          if s not in series_list]
     token = live_token(builder, live_names, args.refresh_live)

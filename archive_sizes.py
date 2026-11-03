@@ -91,6 +91,7 @@ POCKETS = ["release", "security", "updates", "proposed", "backports"]
 CANDIDATE_SERIES = [
     "bionic", "focal", "jammy", "kinetic", "lunar", "mantic", "noble",
     "oracular", "plucky", "questing", "resolute", "stonking",
+    "tenacious",
 ]
 
 # Series aggregated on their own and folded in afterwards, rather than merged
@@ -105,13 +106,13 @@ CANDIDATE_SERIES = [
 # which is a hash of the series list.
 #
 # Empty on purpose, but kept: the mechanism is the only way to add a series
-# without invalidating every cached aggregate.  xenial qualified -- measured at
-# exactly 0 bytes of overlap against all twelve -- and was carried here until
-# reading it from the live archive showed 413.6 GiB against the 121.5 GiB the
-# snapshot service can see, so it moved to LIVE_SERIES.  Anything put here
-# needs that same zero-overlap measurement first; "breakdown" merges the pool
-# for real instead of trusting the split, so comparing its archive total
-# against the page's is the check.
+# without invalidating every cached aggregate.  xenial qualified -- measured
+# at exactly 0 bytes of overlap against every other series -- and was carried
+# here until reading it from the live archive showed 413.6 GiB against the
+# 121.5 GiB the snapshot service can see, so it moved to LIVE_SERIES.
+# Anything put here needs that same zero-overlap measurement first;
+# "breakdown" merges the pool for real instead of trusting the split, so
+# comparing its archive total against the page's is the check.
 SEPARATE_SERIES = []
 
 # Series read from the live archive instead, because the snapshot service
@@ -167,7 +168,7 @@ def removed_after(series, snapshot):
 RELEASE_ORDER = [
     "trusty", "xenial", "bionic", "focal", "jammy", "kinetic", "lunar",
     "mantic", "noble", "oracular", "plucky", "questing", "resolute",
-    "stonking",
+    "stonking", "tenacious",
 ]
 
 DEFAULT_COMPONENTS = ["main", "restricted", "universe", "multiverse"]
@@ -1117,9 +1118,9 @@ def merge_rows(into, rows, series_bit):
     Ubuntu has a single pool/ shared by every series, so the same package
     version referenced by two series is one file on disk.  Each row therefore
     carries a bitmask of every series that references it -- as of 2026-09 only
-    93 distinct masks occur out of the 4096 twelve series could produce,
-    because sharing follows patterns: most files belong to one series, and the
-    rest are mostly runs of consecutive ones.
+    93 distinct masks occur out of the 4096 the twelve series of the day could
+    produce, because sharing follows patterns: most files belong to one
+    series, and the rest are mostly runs of consecutive ones.
 
     That mask is what lets the page take any set of series and count each file
     once, exactly as the pocket mask does for pockets.  Summing per-series
