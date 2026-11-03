@@ -1,3 +1,5 @@
+# Copyright (C) 2026 Canonical Ltd.
+# SPDX-License-Identifier: GPL-3.0-only
 """Shared guts of kernel-sizes-explorer: fetching, caching and aggregating.
 
 The unit of caching is one binary/source index blob, keyed by the SHA256 that

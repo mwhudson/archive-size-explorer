@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (C) 2026 Canonical Ltd.
+# SPDX-License-Identifier: GPL-3.0-only
 # Estimate disk usage of kernel packages across Ubuntu series via chdist.
 # A "kernel package" is any binary built by a source whose binaries include
 # something that Provides: linux-image, plus any binary named

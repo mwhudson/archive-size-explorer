@@ -565,3 +565,19 @@ Since a snapshot has to be deduplicated across all of its series at once, it is
 also aggregated in one go, which means holding every series' rows for that
 snapshot in memory together — a few million entries. That is the peak cost of a
 build.
+
+## Copyright and licence
+
+Copyright (C) 2026 Canonical Ltd.
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License version 3, as published by the
+Free Software Foundation.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+details.
+
+You should have received a copy of the GNU General Public License along with
+this program.  If not, see <https://www.gnu.org/licenses/>.
