@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Canonical Ltd.
 # SPDX-License-Identifier: GPL-3.0-only
-"""Explore how much of the Ubuntu archive is taken up by kernels.
+"""Explore how big the Ubuntu archive is, and how much of it is kernels.
 
 Reads binary and source indexes straight from the Ubuntu snapshot service, so
 it can look at any point in time since 2023-03-01 rather than just whatever
 apt happens to have locally.  Everything it downloads is reduced and cached, so
 the expensive first run is the only expensive run.
 
-  kernel-sizes-explorer build -o kernels.html     # fetch + write the page
-  kernel-sizes-explorer report -s noble           # text summary of one snapshot
-  kernel-sizes-explorer breakdown --family        # where the space actually goes
-  kernel-sizes-explorer cache                     # what the cache is holding
+  archive-size-explorer build -o archive.html     # fetch + write the page
+  archive-size-explorer report -s noble           # text summary of one snapshot
+  archive-size-explorer breakdown --family        # where the space actually goes
+  archive-size-explorer cache                     # what the cache is holding
 
 The output of "build" is a single self-contained HTML file: open it with
 file://, no server needed.
@@ -31,7 +31,7 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from kernel_sizes import (  # noqa: E402
+from archive_sizes import (  # noqa: E402
     ARCHIVE_BASE, Builder, Cache, Fetcher, CANDIDATE_SERIES,
     DEFAULT_COMPONENTS, LIVE, LIVE_SERIES, MIRROR_MAX_AGE, OTHER, POCKETS,
     MIRROR_REMOVED, RELEASE_ORDER, SEPARATE_SERIES, aggregate, aggregate_key,

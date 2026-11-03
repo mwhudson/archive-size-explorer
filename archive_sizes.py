@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Canonical Ltd.
 # SPDX-License-Identifier: GPL-3.0-only
-"""Shared guts of kernel-sizes-explorer: fetching, caching and aggregating.
+"""Shared guts of archive-size-explorer: fetching, caching and aggregating.
 
 The unit of caching is one binary/source index blob, keyed by the SHA256 that
 the suite's Release file records for it.  That makes the cache dedupe for free:
@@ -187,7 +187,7 @@ def log(msg):
 
 def default_cache_dir():
     base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    return os.path.join(base, "kernel-sizes-explorer")
+    return os.path.join(base, "archive-size-explorer")
 
 
 class Cache:
@@ -385,7 +385,7 @@ class Fetcher:
             adapter = requests.adapters.HTTPAdapter(
                 pool_connections=self.jobs, pool_maxsize=self.jobs, max_retries=3)
             s.mount("https://", adapter)
-            s.headers["User-Agent"] = "kernel-sizes-explorer/1"
+            s.headers["User-Agent"] = "archive-size-explorer/1"
             self.local.session = s
         return s
 
