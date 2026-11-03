@@ -382,11 +382,6 @@ Slots.prototype.dash = function (k) {
   return DASHES[Math.floor(this.map.get(k) / SLOTS) % DASHES.length];
 };
 
-/** How many times the palette has come round for this key. */
-Slots.prototype.cycle = function (k) {
-  return this.map.has(k) ? Math.floor(this.map.get(k) / SLOTS) : 0;
-};
-
 /** A CSS background for a chip or legend key: the hue, dashed if it repeats. */
 Slots.prototype.swatch = function (k) {
   const colour = this.colour(k);
@@ -1355,14 +1350,11 @@ function buildFilters() {
 
 /* ------------------------------------------------------------------- views */
 
-/** Build the line series for the current split, plus a note about any that
-    could not be given a colour. */
+/** Build the line series for the current split. */
 function splitLines(tl, pick) {
   const sp = tl.split;
   const drawn = sp.slots.drawable(sp.sel);
   return {
-    dropped: sp.sel.size - drawn.length,
-    repeats: drawn.filter(k => sp.slots.cycle(k) > 0).length,
     label: sp.label,
     keys: drawn,
     series: drawn.map(k => ({
@@ -1372,31 +1364,6 @@ function splitLines(tl, pick) {
       points: (tl.perKey.get(k) || []).map(c => (c ? pick(c) : null)),
     })),
   };
-}
-
-/** Say so when the palette has had to come round again.
- *
- *  Was a warning that extra selections went undrawn; the palette repeats
- *  instead now, so what needs saying is that a colour appears twice and the
- *  dash is what separates the two.
- */
-function dropNote(host, lines) {
-  if (lines.repeats) {
-    note(host, lines.keys.length + " lines are selected and there are only " +
-      SLOTS + " colours, so " + lines.repeats +
-      " of them reuse a hue. A reused hue is drawn dashed, and the legend " +
-      "shows which: the colour and the dash together name the " + lines.label +
-      (lines.keys.length > SLOTS * (DASHES.length - 1) + SLOTS
-        ? ", though past " + SLOTS * DASHES.length + " even those pairs run " +
-          "out and some really are alike -- the table view is the way to " +
-          "read this many."
-        : ", so no two lines look alike."));
-  }
-  if (lines.dropped) {
-    note(host, lines.dropped + " selected " + lines.label +
-      (lines.dropped === 1 ? " is" : " are") + " not drawn. That should not " +
-      "happen -- every selection gets a colour -- so it is worth reporting.");
-  }
 }
 
 function viewTime(host, tl) {
@@ -1417,7 +1384,6 @@ function viewTime(host, tl) {
     series: shareLines.series,
   });
   legend(shareCard, shareLines.series.map(l => [l.name, l.colour, l.dash]));
-  dropNote(shareCard, shareLines);
 
   const absLines = splitLines(tl, c => c.kernel);
   const absCard = card(host, "Kernel bytes, per " + tl.split.label,
@@ -1668,7 +1634,6 @@ function viewArchive(host) {
     series: sizeLines.series,
   });
   legend(splitCard, sizeLines.series.map(l => [l.name, l.colour, l.dash]));
-  dropNote(splitCard, sizeLines);
 
   const shareCard = card(host, "Kernel share of the whole archive",
     "The two lines from the first chart as a ratio.", "archive-share");
@@ -1792,7 +1757,6 @@ function viewLists(host) {
     series: sizeLines.series,
   });
   legend(splitCard, sizeLines.series.map(l => [l.name, l.colour, l.dash]));
-  dropNote(splitCard, sizeLines);
   const allArch = D.arches.indexOf("all");
   if (il.split.key === "arch" && state.arch.has(allArch)) {
     note(splitCard, "'all' has no line because it has no index directory: an " +
@@ -1815,7 +1779,6 @@ function viewLists(host) {
     series: pocketSize.series,
   });
   legend(pocketCard, pocketSize.series.map(l => [l.name, l.colour, l.dash]));
-  dropNote(pocketCard, pocketSize);
 
   const compCard = card(host, "Package lists, per component",
     "Compressed size. universe is most of what makes the lists long, and " +
@@ -1828,7 +1791,6 @@ function viewLists(host) {
     series: compSize.series,
   });
   legend(compCard, compSize.series.map(l => [l.name, l.colour, l.dash]));
-  dropNote(compCard, compSize);
 
   const bySuite = indexTimelineBy(suiteSplit(), (s, a, c, p) => s * NPOCK + p);
   const suiteCard = card(host, "Package lists, per suite",
@@ -1846,7 +1808,6 @@ function viewLists(host) {
     series: suiteSize.series,
   });
   legend(suiteCard, suiteSize.series.map(l => [l.name, l.colour, l.dash]));
-  dropNote(suiteCard, suiteSize);
 
   const entCard = card(host, "Entries in the package lists",
     "One entry per stanza, counted as the indexes list them rather than as " +
@@ -1908,7 +1869,6 @@ function viewLists(host) {
     series: pocketShare.series,
   });
   legend(pocketShareCard, pocketShare.series.map(l => [l.name, l.colour, l.dash]));
-  dropNote(pocketShareCard, pocketShare);
 
   const compShareCard = card(host, "Kernel share of the lists, per component",
     "restricted is where linux-restricted-modules and its linux-objects-* " +
@@ -1927,7 +1887,6 @@ function viewLists(host) {
     series: compShare.series,
   });
   legend(compShareCard, compShare.series.map(l => [l.name, l.colour, l.dash]));
-  dropNote(compShareCard, compShare);
 
   snapshotChooser(host, body => {
     const byArch = new Map();
@@ -2255,6 +2214,11 @@ const NOTES = [
   "line or row: a file jammy and noble both reference belongs to each of " +
   "their sizes, so those add up to more than the archive holds. The Archive " +
   "size tab and the last column of Tables count each file once.",
+
+  "Where more lines are drawn than there are hues, the hues come round " +
+  "again and each repeat is dashed, so a line is named by its colour and " +
+  "dash together. A dash means nothing else: the legend says which line is " +
+  "which.",
 
   "Package lists is the exception to all of that. It measures the indexes " +
   "rather than the pool, so it counts stanzas as the archive publishes them: " +
