@@ -9,7 +9,8 @@ It measures three things: the size of `pool/`, which is the packages; the size
 of `dists/`, which is the indexes `apt update` downloads before it can install
 anything; and how much of each is kernels. That last one is where the tool
 started and is still the most striking number in it — at 2026-11-01 kernel
-packages are **47.5%** of the 9.2 TiB the ten currently-mirrored series occupy.
+packages are **47.1%** of the 9.3 TiB the eleven currently-mirrored series
+occupy.
 
 The output is a single HTML file: open it with `file://`, mail it to someone,
 put it on a web server. Series, architecture, pocket and component are filters
@@ -149,16 +150,16 @@ of the per-series ones — see [How things are counted](#how-things-are-counted)
 `report` works straight off the snapshot service, so its total is over a
 different set of series than the page's: it includes the ones the archive has
 since dropped and leaves out trusty and xenial, which only the live read
-reaches. At 2026-11-01 the two reconcile as 10.2 TiB, plus 669.53 GiB for
+reaches. At 2026-11-01 the two reconcile as 10.3 TiB, plus 669.53 GiB for
 trusty and xenial, less the 1693.9 GiB belonging to nothing still carried,
-giving the 9.2 TiB the page opens with.
+giving the 9.3 TiB the page opens with.
 
 ```console
 $ ./archive-size-explorer report --snapshot 2026-11
 ...
-sum of series                              4.6 TiB /   11.2 TiB   40.7%
-whole archive (pool deduped)               4.6 TiB /   10.2 TiB   44.8%
-...files shared between series             1.0 TiB  (10.3% of the archive, ...)
+sum of series                              4.6 TiB /   11.9 TiB   38.5%
+whole archive (pool deduped)               4.6 TiB /   10.3 TiB   44.5%
+...files shared between series             1.6 TiB  (16.0% of the archive, ...)
 ```
 
 `breakdown` answers the other half of the question — if kernels are not the

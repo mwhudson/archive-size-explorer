@@ -2012,14 +2012,6 @@ function legend(host, entries) {
   host.parentNode.appendChild(box);
 }
 
-/** Series the snapshot service cannot answer for, as of the build.
- *
- *  Read from the live archive, so there is one value and no history.  Its own
- *  card rather than a line on the charts: attaching a series to the newest
- *  snapshot alone would put a step the size of the whole series into every
- *  total, and a cliff into the rate view.  These numbers are "now" even when
- *  the charts end weeks earlier.
- */
 /** Why some lines stop before the right-hand edge.
  *
  *  The tables are what the archive carried, not what the snapshot service

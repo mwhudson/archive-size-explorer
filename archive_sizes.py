@@ -98,12 +98,11 @@ CANDIDATE_SERIES = [
 # into the whole-snapshot aggregate.
 #
 # A snapshot normally has to be aggregated whole, because series share one
-# pool/: 1.1 TiB of the archive -- 10.6% of it -- is referenced by more than
-# one series, and aggregating series separately would count each of those
-# files once per series that mentions it.  "report" prints that figure.  A
-# series old enough to share nothing escapes that, and keeping it out of the
-# main aggregate is what lets it be added without changing the main cache key,
-# which is a hash of the series list.
+# pool/: at 2026-11-01, 1.6 TiB of the archive -- 16.0% of it -- is referenced
+# by more than one series, and aggregating series separately would count each
+# of those files once per series that mentions it.  "report" prints that
+# figure.  A series old enough to share nothing escapes that, and can be
+# aggregated on its own and folded in afterwards.
 #
 # Empty on purpose, but kept: it is the cheap way to aggregate a series that
 # shares nothing, since it costs that series alone rather than a whole
@@ -119,11 +118,14 @@ SEPARATE_SERIES = []
 # Series read from the live archive instead, because the snapshot service
 # cannot answer for them: trusty is absent from it at every stamp in every
 # pocket, and xenial is there only in part.  There is no history to be had --
-# the archive holds one state, now -- so these are reported beside the time
-# series rather than inside it.  Folding a series into the latest snapshot
-# alone would step the archive total up by its entire size in one interval and
-# leave a cliff in the rate view, which is precisely the artifact a trailing
-# window exists to suppress.
+# the archive holds one state, now -- so that state is merged into every
+# snapshot and held constant across the window.  That is sound for a suite
+# unpublished since before the window opened, which is most of both; the
+# exception is trusty's non-release pockets, still published, which leaves
+# trusty slightly overstated early on.  Folding them into the latest snapshot
+# alone instead would step the archive total up by their entire size in one
+# interval and leave a cliff in the rate view, which is precisely the artifact
+# a trailing window exists to suppress.
 LIVE_SERIES = ["trusty", "xenial"]
 
 # Which bit each series gets in a series mask.  Append-only: never reorder it,

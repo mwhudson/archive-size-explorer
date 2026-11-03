@@ -564,10 +564,6 @@ def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None,
         "otherClass": OTHER,
         "pockets": POCKETS,
         "mirrored": mirrored,
-        # Series the snapshot service cannot answer for, read from the live
-        # archive and reported as of now.  Deliberately not in the tables
-        # above: they have no history, and inventing one by attaching them to
-        # the newest snapshot would put a step in every total.
         # Which series came from the live archive rather than from a
         # snapshot, so the page can say their history is the present held
         # constant.
