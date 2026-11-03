@@ -27,14 +27,15 @@ total reads largest because it is the denominator for everything below it, and
 its note says what went into it — the selection is not always the whole
 archive.
 
-There are five tabs. **Whole archive** is where the page opens: the archive
+There are five tabs. **Archive size** is where the page opens: the archive
 total over time, deduplicated across series, and the kernel share of it.
-**Over time** draws kernel bytes and kernel share the same way. **Breakdown**
-takes one snapshot in detail — kernel share by architecture, where the kernel
-bytes go, and a split by flavour. **Table** is the numbers behind the charts,
-plus one snapshot in full. **Package lists** asks the same questions of
-`dists/` rather than `pool/`, and is the one tab whose numbers are not
-comparable with the others.
+**Kernels over time** draws kernel bytes and kernel share the same way, as a
+line per series or per architecture. **Kernel breakdown** takes a single
+snapshot apart instead — kernel share by architecture, where the kernel bytes
+go, and a split by flavour. **Tables** is the numbers behind the charts, plus
+one snapshot in full. **Package lists** asks the same questions of `dists/`
+rather than `pool/`, and is the one tab whose numbers are not comparable with
+the others.
 
 A "one line per" control switches the charts between a line per series and a
 line per architecture.
@@ -264,8 +265,8 @@ Every total counts such a file once for whatever set of series you have ticked,
 the same way pockets work. The one place that cannot hold is a per-series line
 or row: a file jammy and noble both reference is part of jammy's size and part
 of noble's, so it is counted in both and those lines add up to more than the
-archive holds. The last column of the table view and the Whole archive tab give
-the deduplicated figure.
+archive holds. The last column of the Tables view and the Archive size tab
+both give the deduplicated figure.
 
 The difference is not small: at 2026-09 the per-series numbers sum to 10.9 TiB
 against a real 9.6 TiB, and the kernel share moves from 38.0% to 42.6% — the

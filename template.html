@@ -214,10 +214,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 <div class="filters" id="filters"></div>
 
 <div class="tabs" role="tablist">
-  <button class="tab" role="tab" data-view="archive" aria-selected="true">Whole archive</button>
-  <button class="tab" role="tab" data-view="time" aria-selected="false">Over time</button>
-  <button class="tab" role="tab" data-view="breakdown" aria-selected="false">Breakdown</button>
-  <button class="tab" role="tab" data-view="table" aria-selected="false">Table</button>
+  <button class="tab" role="tab" data-view="archive" aria-selected="true">Archive size</button>
+  <button class="tab" role="tab" data-view="time" aria-selected="false">Kernels over time</button>
+  <button class="tab" role="tab" data-view="breakdown" aria-selected="false">Kernel breakdown</button>
+  <button class="tab" role="tab" data-view="table" aria-selected="false">Tables</button>
   <button class="tab" role="tab" data-view="lists" aria-selected="false">Package lists</button>
 </div>
 
@@ -1429,7 +1429,7 @@ function viewTime(host, tl) {
   if (tl.split.key === "series") {
     note(absCard, "A file that several series share counts towards each of " +
          "them, so these lines add up to more than the archive holds. The " +
-         "Whole archive tab counts each file once.");
+         "Archive size tab counts each file once.");
   }
 }
 
