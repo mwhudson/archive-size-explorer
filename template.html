@@ -565,7 +565,6 @@ const state = {
 // link degrades to the default instead of a blank page.
 
 let zoomFound = false;
-let writingHash = false;
 
 function setNames(sel, names) {
   return [...sel].sort((a, b) => a - b).map(i => names[i]).join(",");
@@ -616,7 +615,14 @@ function applyHash(hash) {
   const got = new Map();
   for (const part of text.split("&")) {
     const i = part.indexOf("=");
-    if (i > 0) got.set(part.slice(0, i), decodeURIComponent(part.slice(i + 1)));
+    if (i <= 0) continue;
+    // A stray % is a link mangled in transit, and decodeURIComponent throws
+    // on it; drop that one key rather than the page.
+    try {
+      got.set(part.slice(0, i), decodeURIComponent(part.slice(i + 1)));
+    } catch (e) {
+      continue;
+    }
   }
   const views = ["archive", "time", "breakdown", "table", "lists"];
   if (views.includes(got.get("v"))) state.view = got.get("v");
@@ -647,13 +653,11 @@ function applyHash(hash) {
  */
 function syncHash() {
   const text = encodeState();
-  writingHash = true;
   try {
     history.replaceState(null, "", text ? "#" + text : location.pathname);
   } catch (e) {
     if (location.hash.replace(/^#/, "") !== text) location.hash = text;
   }
-  writingHash = false;
 }
 
 /** Every filter and control back to what the page opened with.
@@ -1570,6 +1574,9 @@ function snapshotChooser(host, redraw) {
     updateTiles();
     body.innerHTML = "";
     redraw(body);
+    // Not render(), which would replace the range mid-drag, so the URL has to
+    // be told separately.
+    syncHash();
   });
   redraw(body);
 }
@@ -2238,8 +2245,13 @@ window.addEventListener("resize", () => {
 // Someone editing the hash, following a link into the same page, or using the
 // back button after a file:// fallback write.  The hash is the whole state,
 // so start from the defaults and let it override.
+//
+// A hash that already says what the page shows is our own write coming back:
+// syncHash's file:// fallback assigns location.hash, and the event for that
+// arrives later, as a task of its own.  Rendering then would replace the
+// snapshot slider while it is being dragged.
 window.addEventListener("hashchange", () => {
-  if (writingHash) return;
+  if (location.hash.replace(/^#/, "") === encodeState()) return;
   resetDefaults();
   state.view = DEFAULTS.view;
   state.zoom = null;

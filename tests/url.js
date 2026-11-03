@@ -62,6 +62,50 @@ suite(async ({page, check}) => {
   T.applyHash("#s=noble,nosuchseries");
   check("unknown series survives", [...T.state.series].length, 1);
 
+  // A stray % makes decodeURIComponent throw.  Only that key may go: the rest
+  // of the link still applies.
+  clean(T);
+  let threw = false;
+  try { T.applyHash("#v=time&s=%E0%A4%A&d=log"); } catch (e) { threw = true; }
+  check("bad escape survives", threw, false);
+  check("bad escape drops only its key",
+        [T.state.view, T.state.shown, T.state.series.size],
+        ["time", "log", T.DEFAULTS.series.size]);
+
+  // The snapshot slider redraws without render(), so it has to write the URL
+  // itself -- and must still be the same element afterwards, or a drag dies
+  // after its first step.
+  const inputs = () => T.S.document.getElementById("views")
+    .querySelectorAll("input");
+  const hashchange = () => {
+    const hs = T.windowListeners.hashchange;
+    hs[hs.length - 1]();
+  };
+  clean(T);
+  T.render();
+  const range = inputs()[0];
+  range.value = 0;
+  range.dispatch("input");
+  check("slider writes n=", T.S.location.hash, "#n=" + D.snapshots[0]);
+  check("slider survives its own input", inputs()[0] === range, true);
+
+  // Where replaceState is refused, syncHash assigns location.hash, and the
+  // hashchange for that arrives afterwards.  It is our own write and must not
+  // re-render, which would replace the slider mid-drag.
+  const replaceState = T.S.history.replaceState;
+  T.S.history.replaceState = () => { throw new Error("file:// says no"); };
+  range.value = 1;
+  range.dispatch("input");
+  check("fallback writes n=", T.S.location.hash, "n=" + D.snapshots[1]);
+  hashchange();
+  check("own hashchange does not re-render", inputs()[0] === range, true);
+  T.S.history.replaceState = replaceState;
+
+  // Anyone else's hash change still applies.
+  T.S.location.hash = "#v=time";
+  hashchange();
+  check("external hashchange applies", T.state.view, "time");
+
   // Everything at once still renders.
   T.applyHash("#v=lists&m=isize&d=rate&w=1&f=0");
   T.render();
