@@ -170,6 +170,12 @@ tr.total td { font-weight: 620; border-top: 1px solid var(--axis); }
 footer { color: var(--muted); font-size: 12px; margin-top: 28px; line-height: 1.7; }
 footer a { color: var(--text-secondary); text-decoration: underline; }
 footer a:hover { color: var(--text-primary); }
+footer details { margin-bottom: 10px; }
+footer summary {
+  color: var(--text-secondary); cursor: pointer; width: fit-content;
+}
+footer summary:hover { color: var(--text-primary); }
+footer details p { margin: 10px 0 0; max-width: 78ch; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 </style>
 </head>
@@ -1412,8 +1418,6 @@ function viewTime(host, tl) {
   });
   legend(shareCard, shareLines.series.map(l => [l.name, l.colour, l.dash]));
   dropNote(shareCard, shareLines);
-  removedNote(shareCard);
-  liveNote(shareCard);
 
   const absLines = splitLines(tl, c => c.kernel);
   const absCard = card(host, "Kernel bytes, per " + tl.split.label,
@@ -1426,11 +1430,6 @@ function viewTime(host, tl) {
     series: absLines.series,
   });
   legend(absCard, absLines.series.map(l => [l.name, l.colour, l.dash]));
-  if (tl.split.key === "series") {
-    note(absCard, "A file that several series share counts towards each of " +
-         "them, so these lines add up to more than the archive holds. The " +
-         "Archive size tab counts each file once.");
-  }
 }
 
 function viewBreakdown(host) {
@@ -1670,8 +1669,6 @@ function viewArchive(host) {
   });
   legend(splitCard, sizeLines.series.map(l => [l.name, l.colour, l.dash]));
   dropNote(splitCard, sizeLines);
-  removedNote(splitCard);
-  liveNote(splitCard);
 
   const shareCard = card(host, "Kernel share of the whole archive",
     "The two lines from the first chart as a ratio.", "archive-share");
@@ -2072,19 +2069,20 @@ function legend(host, entries) {
  *  file one of them shared with a surviving series is still counted, because
  *  it is still on the mirror -- only what nobody else references goes.
  */
-function removedNote(host) {
+function removedText() {
   const gone = DATA.mirrorRemoved;
-  if (!gone) return;
+  if (!gone) return "";
   const names = Object.keys(gone).sort(
     (a, b) => D.series.indexOf(a) - D.series.indexOf(b));
-  if (!names.length) return;
-  note(host, "Lines for " +
-    names.map(n => n + " (" + gone[n] + ")").join(", ") +
-    " stop where the series left archive.ubuntu.com, dated from the Internet " +
-    "Archive's captures of its index. The snapshot service keeps serving an " +
-    "EOL suite indefinitely, so counting it after that point would describe " +
-    "the snapshot service rather than a mirror. Files such a series shared " +
-    "with one still carried are unaffected.");
+  if (!names.length) return "";
+  return names.map(n => n + " (" + gone[n] + ")").join(", ") +
+    " are counted only up to the point they left archive.ubuntu.com, which " +
+    "is why their lines stop. Those dates come from the Internet Archive's " +
+    "captures of the archive's index, nothing in the archive itself " +
+    "recording a removal. The snapshot service keeps serving an EOL suite " +
+    "indefinitely, so counting one after that point would describe the " +
+    "service rather than a mirror. Files such a series shared with one still " +
+    "carried are unaffected.";
 }
 
 /** Which series are the present held constant rather than real history.
@@ -2096,10 +2094,10 @@ function removedNote(host) {
  *  throughout, which is why this is an inference rather than an invention.
  *  Where that does not hold it is said plainly.
  */
-function liveNote(host) {
+function liveText() {
   const names = DATA.liveSeries;
-  if (!names || !names.length) return;
-  note(host, names.join(" and ") + " are read from archive.ubuntu.com, not " +
+  if (!names || !names.length) return "";
+  return names.join(" and ") + " are read from archive.ubuntu.com, not " +
     "from the snapshot service, which has no record of them: it carries only " +
     "what has been published since it came online in 2023, and their release " +
     "pockets were last published in 2014 and 2016. A suite unpublished since " +
@@ -2107,7 +2105,7 @@ function liveNote(host) {
     "its content throughout. The exception is trusty's updates, security, " +
     "proposed and backports pockets, which are still published but absent " +
     "from the service: those are today's value held flat, so trusty is a " +
-    "little overstated early on.");
+    "little overstated early on.";
 }
 
 function note(host, text) {
@@ -2237,22 +2235,41 @@ document.getElementById("generated").textContent =
   "snapshot.ubuntu.com | " + stamp(D.snapshots[0]) + " to " +
   stamp(D.snapshots[D.snapshots.length - 1]) + " | built " + DATA.generated;
 
-document.getElementById("footer").innerHTML =
+// Everything about how the numbers are arrived at, in one collapsed block.
+// It used to be four paragraphs of standing text here plus the same two
+// provenance notes repeated under a chart on each of two tabs, which made
+// every chart look like it needed defending.  A <details> needs no script,
+// survives being saved to a file, and keeps its state across re-renders
+// because the footer is written once.
+const NOTES = [
   "A package counts as a kernel package when its source ships a binary that " +
   "<code>Provides: linux-image</code>, plus any " +
-  "<code>linux-objects-*-&lt;kver&gt;</code> built for a kernel version seen in " +
-  "those images - the same rule as the <code>kernel-sizes</code> script.<br>" +
-  "A file published to several pockets is counted once, so the totals are what " +
-  "the archive actually stores rather than the sum of the indexes.<br>" +
-  "Series share one pool/ too, so every total here counts a shared file once " +
-  "for the set you have ticked. The one place that does not hold is a " +
-  "per-series line or row: a file jammy and noble both reference belongs to " +
-  "each of their sizes, so those add up to more than the archive holds.<br>" +
+  "<code>linux-objects-*-&lt;kver&gt;</code> built for a kernel version seen " +
+  "in those images - the same rule as the <code>kernel-sizes</code> script.",
+
+  "A file published to several pockets is counted once, so the totals are " +
+  "what the archive actually stores rather than the sum of the indexes.",
+
+  "Series share one pool/ too, so every total counts a shared file once for " +
+  "the set you have ticked. The one place that does not hold is a per-series " +
+  "line or row: a file jammy and noble both reference belongs to each of " +
+  "their sizes, so those add up to more than the archive holds. The Archive " +
+  "size tab and the last column of Tables count each file once.",
+
   "Package lists is the exception to all of that. It measures the indexes " +
   "rather than the pool, so it counts stanzas as the archive publishes them: " +
   "once per pocket, and once per architecture for an Architecture: all " +
-  "package. Sizes there come from the Release files, not from the packages." +
-  "<br>Generated by " +
+  "package. Sizes there come from the Release files, not from the packages.",
+
+  removedText(),
+  liveText(),
+];
+
+document.getElementById("footer").innerHTML =
+  "<details><summary>How these numbers are counted</summary>" +
+  NOTES.filter(Boolean).map(t => "<p>" + t + "</p>").join("") +
+  "</details>" +
+  "Generated by " +
   "<a href=\"https://github.com/mwhudson/archive-size-explorer\">" +
   "archive-size-explorer</a>.";
 

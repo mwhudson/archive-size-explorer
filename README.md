@@ -60,6 +60,14 @@ every chart below it unexplained. Every chart has a **focus** button that hides
 the others on its tab and draws that one larger. The snapshot chooser stays put
 when you do, since the charts beside it depend on it.
 
+**How these numbers are counted**, at the foot of the page, is where the
+methodology lives: the kernel rule, the two kinds of deduplication, and where
+each series' data came from, including the removal dates for the ones that have
+left the archive. It is collapsed by default. What stays under a chart is
+either a reading of it — how much the archive grew over the window, and what
+that did to the kernel share — or something about the selection you have made,
+such as which lines had to reuse a hue.
+
 The address bar follows the page, so a link carries the filters, the tab, the
 chosen snapshot and whichever chart is focused. Only what differs from the
 defaults is written, which leaves an untouched page with a clean URL and makes
