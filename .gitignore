@@ -1,1 +1,6 @@
 __pycache__/
+# Generated pages.  The dataset inside one is base64'd gzip, so successive
+# builds barely delta against each other -- tracking them would add megabytes
+# of history per rebuild for output the tool can regenerate in seconds.
+*.html
+!template.html
