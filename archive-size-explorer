@@ -36,7 +36,8 @@ from archive_sizes import (  # noqa: E402
     DEFAULT_COMPONENTS, LIVE, LIVE_SERIES, MIRROR_MAX_AGE, OTHER, POCKETS,
     MIRROR_REMOVED, RELEASE_ORDER, SEPARATE_SERIES, aggregate, aggregate_key,
     count_index, default_cache_dir, kernel_predicate, live_digest,
-    live_entries, log, merge_rows, probe_mirror, removed_after, snapshots,
+    live_entries, log, merge_rows, probe_mirror, removed_after, series_bit,
+    snapshots,
 )
 
 
@@ -245,8 +246,8 @@ def aggregate_snapshot(builder, snap, series_list, live_names=(),
     names the series that existed at this snapshot and `partial` says a read
     was skipped -- which makes the result unfit to cache.
 
-    Masks are bit positions in series_list, so a caller that aggregates a
-    sub-list has to shift them before mixing the result with anything else.
+    Masks come from SERIES_BITS, so they mean the same thing whatever subset
+    of series this was called with, and two results can be mixed as they are.
 
     A series in live_names is read from live_token instead of from snap.  It
     has to be merged here rather than added afterwards: the pool is shared
@@ -270,7 +271,7 @@ def aggregate_snapshot(builder, snap, series_list, live_names=(),
             continue
         here.append(series)
         plans.append((series, builder.plan(src, series)))
-        merge_rows(whole, rows, 1 << series_list.index(series))
+        merge_rows(whole, rows, series_bit(series))
         del rows
     if not whole:
         return None, None, {}, here, partial
@@ -282,7 +283,7 @@ def aggregate_snapshot(builder, snap, series_list, live_names=(),
     return cls_table, flav_table, idx_table, here, partial
 
 
-def fold_separate(builder, snap, series, bit, byclass, byflavour, byindex):
+def fold_separate(builder, snap, series, byclass, byflavour, byindex):
     """Add one separately-aggregated series into a snapshot's tables.
 
     Its aggregate is cached under a key naming only itself, which is what
@@ -304,14 +305,14 @@ def fold_separate(builder, snap, series, bit, byclass, byflavour, byindex):
         if cls_table and not partial:
             builder.cache.put_aggregate(snap, key, cls_table, flav_table,
                                         idx_table, here)
-    mask = 1 << bit
+    mask = series_bit(series)
     if cls_table:
         for k, acc in cls_table.items():
             # One series in, so the only mask it can carry is its own bit.
-            assert k[0] == 1, (series, k)
+            assert k[0] == mask, (series, k)
             byclass[(snap, mask) + k[1:]] = acc
         for k, acc in flav_table.items():
-            assert k[0] == 1, (series, k)
+            assert k[0] == mask, (series, k)
             byflavour[(snap, mask) + k[1:]] = acc
     # Index rows carry the series by name, so they need no shifting.
     for k, acc in idx_table.items():
@@ -334,14 +335,14 @@ def drop_removed(byclass, byflavour, byindex, series_list):
     Returns the three tables, and the number of bytes it stopped counting at
     the most recent snapshot, which is the figure worth reporting.
     """
-    gone = {s: i for i, s in enumerate(series_list) if s in MIRROR_REMOVED}
+    gone = {s: series_bit(s) for s in series_list if s in MIRROR_REMOVED}
     if not gone:
         return byclass, byflavour, byindex, 0
 
     def surviving_mask(snap, smask):
         for series, bit in gone.items():
-            if smask >> bit & 1 and removed_after(series, snap):
-                smask &= ~(1 << bit)
+            if smask & bit and removed_after(series, snap):
+                smask &= ~bit
         return smask
 
     last = max((k[0] for k in byclass), default=None)
@@ -384,6 +385,35 @@ def drop_removed(byclass, byflavour, byindex, series_list):
     return out_class, out_flav, out_idx, dropped
 
 
+def snapshot_key(builder, snap, series_list, live_names=(),
+                 live_token=None):
+    """Cache key for this snapshot's aggregate, or None if it cannot be named.
+
+    Keyed on the series that are really at this snapshot rather than the ones
+    that were asked for, which is what makes adding a series cheap: tenacious
+    opened in October 2026, so it changes the key at the one monthly snapshot
+    that has it and leaves the other forty-four hitting the cache.  Settling
+    that costs Release lookups, which are cached and which the aggregation
+    would make anyway.
+
+    None means the question could not be answered -- an --offline run whose
+    cache never saw one of these suites.  The caller then neither reads nor
+    writes the cache, and aggregate_snapshot reaches the same wall and marks
+    its result unfit to keep.
+    """
+    try:
+        present = [s for s in series_list
+                   if builder.present(live_token if s in live_names else snap,
+                                      s)]
+    except SkipOffline:
+        return None
+    # The live token is part of the key because it is the only thing pinning
+    # down content a snapshot stamp cannot vouch for.
+    return aggregate_key(present, builder.components, builder.arches,
+                         builder.pockets, builder.sources,
+                         extra=live_token if live_names else None)
+
+
 def collect(builder, snaps, series_list, separate=(), live_names=(),
             live_token=None, progress=True):
     """Aggregate each snapshot, with every series folded into one map.
@@ -403,28 +433,17 @@ def collect(builder, snaps, series_list, separate=(), live_names=(),
 
     `separate` names series aggregated on their own and folded in afterwards,
     each under a cache key of its own.  That is only sound for a series that
-    shares no pool file with the rest, and it buys the thing the main tier
-    cannot give: adding one does not change the main key, so none of the
-    existing aggregates are invalidated.  See SEPARATE_SERIES.
+    shares no pool file with the rest, and what it buys is cost: one series'
+    aggregation rather than a whole snapshot's.  See SEPARATE_SERIES.
     """
     byclass = {}
     byflavour = {}
     byindex = {}
     seen = []
     started = time.time()
-    # The main tier's key covers series_list alone, so the separate tier can
-    # gain or lose a series without invalidating any of it.
-    # The live token is part of the key because it is the only thing pinning
-    # down content a snapshot stamp cannot vouch for.
-    key = aggregate_key(series_list, builder.components, builder.arches,
-                        builder.pockets, builder.sources,
-                        extra=live_token if live_names else None)
-    # series_list is a prefix of this, so every mask the main tier has already
-    # cached still means what it meant.
-    all_series = list(series_list) + [s for s in separate
-                                      if s not in series_list]
     for i, snap in enumerate(snaps, 1):
-        cached = builder.cache.get_aggregate(snap, key)
+        key = snapshot_key(builder, snap, series_list, live_names, live_token)
+        cached = builder.cache.get_aggregate(snap, key) if key else None
         if cached is not None:
             cls_table, flav_table, idx_table, here = cached
         else:
@@ -435,7 +454,7 @@ def collect(builder, snaps, series_list, separate=(), live_names=(),
             # Never cache a run that could not read everything it wanted: an
             # --offline miss looks exactly like a series that does not exist
             # yet, and would be indistinguishable once written down.
-            if cls_table and not partial:
+            if cls_table and not partial and key:
                 builder.cache.put_aggregate(snap, key, cls_table,
                                             flav_table, idx_table, here)
         all_cached = cached is not None
@@ -443,7 +462,6 @@ def collect(builder, snaps, series_list, separate=(), live_names=(),
             if extra in series_list:
                 continue
             e_here, e_cached = fold_separate(builder, snap, extra,
-                                             all_series.index(extra),
                                              byclass, byflavour, byindex)
             all_cached = all_cached and e_cached
             for name in e_here:
@@ -499,22 +517,20 @@ def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None,
     for k in byclass:
         used_bits |= k[1]
     for k in byindex:
-        used_bits |= 1 << series_list.index(k[1])
-    # Release order, not series_list order: the latter is pinned by the cache
-    # key (new series get appended), which has nothing to do with where a
-    # series sits in time.  remap is built from this list, so reordering it
-    # just reassigns the output bits consistently.
-    kept = series_order(s for i, s in enumerate(series_list)
-                        if used_bits >> i & 1)
-    remap = {}
-    for new_i, name in enumerate(kept):
-        remap[series_list.index(name)] = new_i
+        used_bits |= series_bit(k[1])
+    # Release order, not SERIES_BITS order: that one records when each bit was
+    # handed out, which has nothing to do with where a series sits in time.
+    # Both maps are built from this list, so reordering it just reassigns the
+    # output positions consistently.
+    kept = series_order(s for s in series_list if used_bits & series_bit(s))
+    slot = {name: i for i, name in enumerate(kept)}
+    remap = {series_bit(name): 1 << i for name, i in slot.items()}
 
     def shrink(mask):
         out = 0
-        for old_i, new_i in remap.items():
-            if mask >> old_i & 1:
-                out |= 1 << new_i
+        for old_bit, new_bit in remap.items():
+            if mask & old_bit:
+                out |= new_bit
         return out
 
     cls_rows = []
@@ -530,7 +546,7 @@ def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None,
     # one suite, and there is nothing to deduplicate.
     idx_rows = []
     for (snap, series, pocket, comp, arch), acc in sorted(byindex.items()):
-        idx_rows += [snap_i[snap], remap[series_list.index(series)],
+        idx_rows += [snap_i[snap], slot[series],
                      arch_i[arch], comp_i[comp], pocket_i[pocket],
                      acc[0], acc[1], acc[2], acc[3]]
 
@@ -661,10 +677,9 @@ def cmd_build(args):
     builder = make_builder(args)
     snaps = snapshots(args.from_, args.to, args.every)
     series_list, separate = requested_series(args.series)
-    # Series read from the live archive go on the end, so the snapshot series
-    # keep the bit positions every cached aggregate was numbered from.  Note
-    # the corollary: it is these two that move when a candidate is appended,
-    # which is why an append still invalidates the cache.  See the README.
+    # Where these go in the list no longer decides anything: bits come from
+    # SERIES_BITS, not from a position here.  It used to, and appending a
+    # candidate in front of trusty and xenial moved both of their bits.
     live_names = [] if args.series else [s for s in LIVE_SERIES
                                          if s not in series_list]
     token = live_token(builder, live_names, args.refresh_live)
@@ -722,7 +737,7 @@ def cmd_report(args):
     series_list, separate = requested_series(args.series)
     byclass, _flav, _idx, seen = collect(builder, snaps, series_list,
                                          separate=separate, progress=False)
-    # Masks are bit positions in this, which is what collect folded into.
+    # Which series to report on; the masks name them by SERIES_BITS bit.
     series_list = series_list + [s for s in separate if s not in series_list]
 
     # A row's series mask says which series reference that file.  Adding a row
@@ -737,8 +752,8 @@ def cmd_report(args):
         if cls != OTHER:
             slot[2] += acc[1]
             slot[3] += acc[0]
-        for i, name in enumerate(series_list):
-            if not smask >> i & 1:
+        for name in series_list:
+            if not smask & series_bit(name):
                 continue
             slot = per.setdefault((snap, name, arch), [0, 0, 0, 0])
             slot[0] += acc[1]
@@ -820,7 +835,7 @@ def collect_sources(builder, snaps, series_list, match=None, family=False,
                 continue
             if series not in seen:
                 seen.append(series)
-            merge_rows(whole, rows, 1 << series_list.index(series))
+            merge_rows(whole, rows, series_bit(series))
             del rows
         if whole:
             is_kernel_row = kernel_predicate(whole)

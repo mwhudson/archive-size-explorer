@@ -88,25 +88,36 @@ cold build costs. The operational points:
   and xenial out and still exits 0.** It is logged, but the reliable check is
   the series list in the output. Once the pin and the live blobs are warm,
   offline builds include them.
-* **Adding a series costs a full re-aggregation, and not for the reason the
-  code suggests.** The series bitmask is positional, so a mask means nothing
-  except against the list it was numbered from — hence the rule to append to
-  `CANDIDATE_SERIES` and let `RELEASE_ORDER` say where the series really
-  belongs. But `collect` is called with `series_list + live_names`, so trusty
-  and xenial sit *after* the last candidate, and an append shifts them:
-  tenacious moved trusty from bit 12 to bit 13. Nothing is miscounted, since
-  the key changes too, but the cache cannot be migrated by rename and every
-  snapshot is recomputed. Nothing is refetched; budget the Long runs figures
-  below.
+* **Adding a series means two lists, and `SERIES_BITS` is append-only.** Put
+  it at the end of `SERIES_BITS` — never reorder that list, never renumber it
+  to be tidy — and in `RELEASE_ORDER` wherever the series actually belongs. It
+  also wants to be in `CANDIDATE_SERIES`, which is unordered as far as the
+  cache is concerned. The cost is then one snapshot's aggregation per snapshot
+  that actually holds the series, because the key names what is present rather
+  than what was asked for: tenacious cost 25 seconds across the monthly
+  window, not thirteen minutes.
+* **Changing how bits are assigned means bumping `AGGREGATE_VERSION`.** The
+  candidate list is alphabetical, so a key computed from a sorted series set
+  can collide with one computed from the old positional list — same filename,
+  different numbering inside, one series' bytes reported under another's name.
+  The version is the only thing standing between that and a wrong page.
+* **A numbering change can be migrated rather than recomputed.** Every cached
+  aggregate records the series it covered in its first line (`s\t...`), so the
+  new key can be recomputed from the file's own header and the file renamed
+  onto it — which is how the 4.2 GiB cache moved to version 3. That only works
+  if the bits inside still mean what they meant, so preserve the existing
+  assignments when you extend `SERIES_BITS`.
 
 ## Long runs
 
 Timings, so that slow is not mistaken for hung. Off a warm cache a snapshot
 already aggregated comes back in about a second, so topping a page up to today
 costs one new snapshot's work: roughly two minutes and 130 MiB. What takes real
-time is a change to the aggregate key, which invalidates all of them — fifteen
-minutes to redo the monthly window, a little over two hours for the weekly one,
-two and a half hours for both.
+time is something that invalidates every key at once — an `AGGREGATE_VERSION`
+bump, or `--refresh-live` — at fifteen minutes to redo the monthly window, a
+little over two hours for the weekly one, two and a half hours for both.
+Adding a series is no longer one of those: it re-aggregates only the snapshots
+that hold the series.
 
 Two ways to make a working build look broken:
 

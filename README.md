@@ -515,40 +515,58 @@ one series, and almost all the rest to a run of consecutive ones. Carrying the
 mask costs about 25% more rows than one series per row would, and in exchange
 every selection is exact and there is only one table.
 
-A bit in that mask is a *position* in the candidate series list, so the
-aggregate key is a hash of the whole list: insert a series anywhere but the end
-and every cached mask means something different, invalidating all of them.
-Appending is meant to be the way round that: the stored masks stay exactly
-correct, and while the key still changes, migrating the cache is then a rename
-rather than a recomputation.
+A bit in that mask is a position in `SERIES_BITS`, a list written down once and
+only ever appended to. That it exists separately at all is the point: a cached
+mask means nothing except against the list its positions came from, and the
+numbering used to be assembled per run as the candidate series followed by the
+live ones. Appending to `CANDIDATE_SERIES` was therefore an *insertion* in
+front of trusty and xenial — adding tenacious moved trusty from bit 12 to 13
+and xenial from 13 to 14, and every cached mask mentioning either became wrong.
+Nothing was miscounted, because the key changed in step and the stale entries
+were simply never read, but a series present at one snapshot cost a
+re-aggregation of all of them.
 
-It does not currently work out that way, because the list that gets numbered is
-not `CANDIDATE_SERIES` — `collect` is called with `series_list + live_names`,
-so trusty and xenial hold the two positions after the last candidate. Appending
-a candidate therefore inserts it *in front of* them and shifts both. Adding
-tenacious moved trusty from bit 12 to bit 13 and xenial from 13 to 14, which
-the cache shows plainly: in the 2023-03 aggregate every mask below 32 is
-byte-for-byte what it was, while the rows that read 4096 and 8192 now read 8192
-and 16384. Nothing is miscounted — the key changed too, so the stale entries
-are never read — but the migration is a mask rewrite rather than a rename, and
-in practice adding a series re-aggregates every snapshot. It does that from
-blobs that are already cached, so nothing is refetched and there is no network
-cost; it costs the aggregation time, which was about thirteen minutes for the
-monthly window and a couple of hours for the weekly one.
-`RELEASE_ORDER` is a separate list so that appending for the cache's sake
-cannot put a ten-year-old series at the newest end of the page: the candidate
-list's order is the cache's business, release order is the page's.
+The key is the other half. It names the series that are actually at a snapshot
+rather than the ones that were asked for, settled from the Release lookups
+before the cache is consulted — cached on disk, and lookups the aggregation
+would make anyway. Adding a series then changes the key only where that series
+really is: tenacious opened in October 2026, so it re-aggregated one monthly
+snapshot out of forty-five and left the other forty-four hitting the cache.
+Twenty-five seconds, against the thirteen minutes the old scheme charged.
 
-Appending still leaves a new series with no history, because a cache hit is
-exactly what stops it being fetched. `SEPARATE_SERIES` is the way out for a
-series that shares no pool file with any other: those are aggregated alone,
-under a cache key naming only themselves, and folded in afterwards, so adding
-or dropping one leaves every other entry valid and costs only its own
-aggregation — about 4 seconds a snapshot against 60 to 90 for a whole-snapshot
-redo. It is only sound when the series really is disjoint, since summing series
-that share pool files counts each shared file once per series that references
-it. The list is empty: the live archive is the better answer for the only
-series that qualified.
+Because `SERIES_BITS` deliberately keeps bionic..stonking, trusty and xenial on
+the bits they already held, the 4.2 GiB cache this was developed against moved
+to the new scheme by renaming 230 files onto their new keys — each file already
+records the series it covered, so the key can be recomputed from its own
+header. That is the rename the old scheme promised and could not deliver.
+
+One trap is worth knowing about, because the two changes alter what a key means
+without always changing its value. The candidate list is alphabetical, so for a
+snapshot where every series is present the new sorted set hashes to exactly
+what the old positional list did. An entry written under the old numbering
+would then be read back under a key that matched, putting one series' bytes
+under another series' name. `AGGREGATE_VERSION` is what stops that, and bumping
+it is part of any change to how bits are assigned.
+
+`RELEASE_ORDER` is a third list, so that appending for the cache's sake cannot
+put a ten-year-old series at the newest end of the page: `SERIES_BITS`' order
+is the cache's business, release order is the page's.
+
+Keying on presence is also what keeps a newly added series from quietly having
+no history at all. Were the key to ignore the series outright, every snapshot
+would hit the cache and the series would never be read — a cache hit is exactly
+what stops it being fetched. Resolving what is there first is what separates a
+snapshot that genuinely predates the series from one that holds it and has not
+been looked at yet.
+
+`SEPARATE_SERIES` is a different lever, for a series that shares no pool file
+with any other: those are aggregated alone, under a cache key naming only
+themselves, and folded in afterwards, so adding or dropping one costs only its
+own aggregation — about 4 seconds a snapshot against 60 to 90 for a
+whole-snapshot redo. It is only sound when the series really is disjoint, since
+summing series that share pool files counts each shared file once per series
+that references it. The list is empty: the live archive is the better answer
+for the only series that qualified.
 
 Since a snapshot has to be deduplicated across all of its series at once, it is
 also aggregated in one go, which means holding every series' rows for that

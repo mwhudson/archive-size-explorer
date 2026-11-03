@@ -105,8 +105,9 @@ CANDIDATE_SERIES = [
 # main aggregate is what lets it be added without changing the main cache key,
 # which is a hash of the series list.
 #
-# Empty on purpose, but kept: the mechanism is the only way to add a series
-# without invalidating every cached aggregate.  xenial qualified -- measured
+# Empty on purpose, but kept: it is the cheap way to aggregate a series that
+# shares nothing, since it costs that series alone rather than a whole
+# snapshot.  xenial qualified -- measured
 # at exactly 0 bytes of overlap against every other series -- and was carried
 # here until reading it from the live archive showed 413.6 GiB against the
 # 121.5 GiB the snapshot service can see, so it moved to LIVE_SERIES.
@@ -124,6 +125,52 @@ SEPARATE_SERIES = []
 # leave a cliff in the rate view, which is precisely the artifact a trailing
 # window exists to suppress.
 LIVE_SERIES = ["trusty", "xenial"]
+
+# Which bit each series gets in a series mask.  Append-only: never reorder it,
+# never remove an entry, and never renumber it to be pretty.
+#
+# A cached mask is a set of bit positions, so it means nothing except against
+# the list those positions came from.  That list used to be assembled per run
+# as the candidate series followed by the live ones, which made appending to
+# CANDIDATE_SERIES an *insertion* in front of trusty and xenial: adding
+# tenacious moved trusty from bit 12 to 13 and xenial from 13 to 14, and every
+# cached mask mentioning either became wrong.  Nothing was miscounted, because
+# the key changed in step and the stale entries were simply never read, but it
+# cost a re-aggregation of every snapshot for a series that exists at one of
+# them.
+#
+# Hence one list, written down once.  The order is the order the bits were
+# handed out and records nothing else -- it is neither release order, which is
+# RELEASE_ORDER's job, nor the candidate list's order.  That is why trusty and
+# xenial sit in the middle with tenacious after them: they held bits 12 and 13
+# before this list existed, and keeping them there is what let the cache be
+# renamed into place rather than recomputed.
+SERIES_BITS = [
+    "bionic", "focal", "jammy", "kinetic", "lunar", "mantic", "noble",
+    "oracular", "plucky", "questing", "resolute", "stonking",
+    "trusty", "xenial",
+    "tenacious",
+]
+
+_SERIES_BIT = {name: 1 << i for i, name in enumerate(SERIES_BITS)}
+
+# A series with no bit would silently aggregate to mask 0 and merge with
+# everything else, so say so at import rather than in the output.
+for _name in CANDIDATE_SERIES + SEPARATE_SERIES + LIVE_SERIES:
+    assert _name in _SERIES_BIT, "no bit assigned to %s" % _name
+del _name
+
+
+def series_bit(name):
+    """This series' bit in a series mask.
+
+    Unknown names raise: there is no safe default, since 0 would merge the
+    series into every other row rather than failing.
+    """
+    try:
+        return _SERIES_BIT[name]
+    except KeyError:
+        raise KeyError("%s has no bit; append it to SERIES_BITS" % name)
 
 # When each series left archive.ubuntu.com, so that the page can stop counting
 # it rather than carrying it forever.
@@ -159,12 +206,10 @@ def removed_after(series, snapshot):
     return bool(bounds) and snapshot[:8] >= bounds[1].replace("-", "")
 
 # Every series the tool knows, in release order.  Deliberately a separate list
-# from the two above: their order is load-bearing for the cache, since the
-# aggregate key is a hash of the series list and a mask is a bit position in
-# it, so a new series has to be *appended* to keep cached masks meaning what
-# they meant.  Where a series belongs chronologically is a different question,
-# and this is where it is answered -- for chip order on the page, and for
-# "newest" when there are more series than colours.
+# from SERIES_BITS: that one is append-only because the cache depends on it,
+# and where a series belongs chronologically is a different question.  This is
+# where that one is answered -- for chip order on the page, and for "newest"
+# when there are more series than colours.
 RELEASE_ORDER = [
     "trusty", "xenial", "bionic", "focal", "jammy", "kinetic", "lunar",
     "mantic", "noble", "oracular", "plucky", "questing", "resolute",
@@ -845,25 +890,39 @@ def aggregate(rows, is_kernel_row=None):
 # different answer for the same inputs, so that cached aggregates written by
 # the old logic are ignored rather than silently reused.  2 added the index
 # tally, which a version 1 entry has no rows for and would read back as empty.
-AGGREGATE_VERSION = 2
+#
+# 3 moved the series bits into SERIES_BITS and made the key name the series
+# that are present rather than the ones asked for.  Both changes alter what a
+# key means without necessarily changing its value: the candidate list is
+# alphabetical, so for a snapshot where every series is present the new sorted
+# set hashes to exactly what the old positional list did.  Entries written
+# before the registry existed were numbered differently, and reading one back
+# under a key that happens to match would put one series' bytes under another
+# series' name.  The version is what stops that.
+AGGREGATE_VERSION = 3
 
 
-def aggregate_key(series_list, components, arches, pockets, sources,
+def aggregate_key(series, components, arches, pockets, sources,
                   extra=None):
     """Identity of one snapshot's aggregate: everything that shapes it.
 
-    The series list is in there because the series bitmask is positional -- a
-    cached smask means nothing except against the list it was numbered from.
-    Architectures and pockets are sorted because they only decide which indexes
-    get merged, not how; components are already in archive order, which
-    load_slim relies on, so their order is kept as it stands.
+    `series` is the series actually merged, as a set rather than a list: the
+    masks name their series through SERIES_BITS, so the order they were walked
+    in cannot change the answer, and a caller that asks for a series which
+    does not exist at this snapshot gets the same key as one that never asked.
+    That is the whole point -- adding a series to the candidate list then
+    changes the key only where that series is really there.
+
+    Architectures and pockets are sorted for the same reason; components are
+    already in archive order, which load_slim relies on, so their order is
+    kept as it stands.
 
     `extra` carries anything else the aggregate depends on that a snapshot
     stamp does not already pin down.  That means the live archive: a stamp
     makes an aggregate valid forever, and a suite read from the live archive
     has no such guarantee, so its content identity goes in the key instead.
     """
-    parts = (AGGREGATE_VERSION, list(series_list), list(components),
+    parts = (AGGREGATE_VERSION, sorted(series), list(components),
              sorted(arches) if arches else None, sorted(pockets),
              bool(sources))
     # Appended only when there is one, so that every aggregate cached before
@@ -987,6 +1046,7 @@ class Builder:
         self.verbose = verbose
         self.downloads = 0
         self.hits = 0
+        self._present = {}
 
     @staticmethod
     def _stale(entries):
@@ -1050,6 +1110,26 @@ class Builder:
             slim = slim_packages(raw)
         self.cache.put_blob(sha, slim)
         self.downloads += 1
+
+    def present(self, snapshot, series):
+        """Whether this series exists at this snapshot.
+
+        The same question plan() answers, asked without building the index
+        list, because the aggregate cache key names the series that are
+        actually there and so has to be settled before the cache is consulted.
+        It costs Release lookups only -- cached on disk, and ones the
+        aggregation would make anyway -- and stops at the first pocket that
+        answers, which for a series that is there is the first one tried.
+
+        Memoised for the run: a snapshot stamp names a fixed state, so the
+        answer cannot change under us.
+        """
+        hit = self._present.get((snapshot, series), None)
+        if hit is None:
+            hit = any(self.release(snapshot, suite_name(series, pocket))
+                      for pocket in self.pockets)
+            self._present[(snapshot, series)] = hit
+        return hit
 
     def plan(self, snapshot, series):
         """Work out which (component, pocket, path, sha) blobs this needs.
