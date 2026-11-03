@@ -119,6 +119,20 @@ points per month.
 
 ## Using it
 
+Two packages, both in the Ubuntu archive. There is no virtualenv, no
+`package.json` and no `npm install` anywhere:
+
+```console
+$ sudo apt install python3-requests nodejs
+```
+
+`python3-requests` is the only thing outside the standard library that the tool
+itself uses. `nodejs` is for the tests in `tests/` and nothing else; the page
+they test has no dependencies at all, which is rather the point of it. Node 18
+or newer, because the page inflates its dataset with `DecompressionStream`,
+which became a global in 18 — on Ubuntu that means 24.04 or later, and the
+suites are run against the 22.x in 26.04.
+
 ```console
 $ ./archive-size-explorer build -o archive.html
 ```
@@ -491,12 +505,12 @@ where the explanatory prose lives:
 $ ./tests/check page.html
 notes: 55 ok, 0 failed
 tabs: 21 ok, 0 failed
-url: 23 ok, 0 failed
+url: 30 ok, 0 failed
 ```
 
 They want a built page rather than the template, since they run the page's own
-script over its own data. There is nothing to install: node 18 or newer, for
-`DecompressionStream`.
+script over its own data. There is no test framework to install, only node —
+see [Using it](#using-it).
 
 The blob is a column store: each table's columns are written out one after
 another as varints, with the key columns delta-encoded against the row above.

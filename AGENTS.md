@@ -15,15 +15,24 @@ $ ./archive-size-explorer build -o page.html
 $ ./tests/check page.html
 notes: 55 ok, 0 failed
 tabs: 21 ok, 0 failed
-url: 23 ok, 0 failed
+url: 30 ok, 0 failed
 ```
+
+`apt install nodejs` is the whole of the setup — there is no `package.json`,
+nothing is fetched from npm, and the suites use only what node ships with. It
+has to be node 18 or newer, because the page inflates its dataset with
+`DecompressionStream` and that became a global in 18; the 12.x in 22.04 cannot
+run these at all.
 
 A built page rather than the template, because the suites run the page's own
 script over its own data — `--from-json` is the quick way to get one without
-going near the cache. Needs node 18 or newer, for `DecompressionStream`. A
-failed check exits 1 and prints what it got against what it wanted; a suite
-that threw exits 2, which is a different kind of problem and usually the stub.
-Every suite runs even if an earlier one fails.
+going near the cache. A failed check exits 1 and prints what it got against
+what it wanted; a suite that threw exits 2, which is a different kind of
+problem and usually the stub. Every suite runs even if an earlier one fails.
+
+If a run fails on prose or layout that you did not touch, check the page is not
+stale: the suites read a built page, so a `template.html` edit needs a rebuild
+before they mean anything.
 
 * **`tabs.js`** pins the tab row: names, order, which one opens, and that each
   tab renders and writes the `v=` it should.

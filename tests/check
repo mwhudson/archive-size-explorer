@@ -10,9 +10,12 @@
 #   ./archive-size-explorer build -o page.html     # or --from-json, for speed
 #   ./tests/check page.html
 #
-# Needs node 18 or newer, for DecompressionStream.  Every suite runs even if an
-# earlier one fails, because the three cover different things and seeing all of
-# it beats bisecting one run at a time.
+# Needs node 18 or newer -- apt install nodejs -- because the page inflates its
+# dataset with DecompressionStream, which became a global in 18.  Nothing else:
+# no package.json, nothing from npm.
+#
+# Every suite runs even if an earlier one fails, because the three cover
+# different things and seeing all of it beats bisecting one run at a time.
 set -u
 
 page=${1-}
