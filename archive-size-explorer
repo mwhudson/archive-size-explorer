@@ -980,8 +980,8 @@ def main():
     p = sub.add_parser("build", help="fetch and write the interactive page")
     add_common(p)
     add_window(p)
-    p.add_argument("-o", "--output", default="kernels.html", metavar="FILE",
-                   help="HTML output (default: %(default)s)")
+    p.add_argument("-o", "--output", default="archive-size.html",
+                   metavar="FILE", help="HTML output (default: %(default)s)")
     p.add_argument("--json", metavar="FILE",
                    help="also write the raw dataset here")
     p.add_argument("--refresh-live", action="store_true",
