@@ -251,6 +251,36 @@ The cache honours `XDG_CACHE_HOME`, and otherwise lives in
 `~/.cache/archive-size-explorer`. Nothing in it depends on the tool's name, so
 an existing cache can be renamed into place rather than refetched.
 
+### Publishing from CI
+
+`.github/workflows/pages.yml` tops both pages up every Wednesday and
+publishes them to GitHub Pages. It gets away without the cache's gigabytes
+because a top-up only aggregates snapshots it has not seen: every older one
+comes back from `aggregate/`, keyed through `release/`. Those two, the live
+pin and the live series' blobs are about 320 MiB, and `ci/state` packs them
+into a tarball kept as an asset on the `cache-state` release, which each run
+downloads and replaces. The other blobs, about 180 MiB once `ci/state prune`
+has cut them down to what the newest snapshots use, go in an Actions cache;
+losing those makes the next run slower, never wrong.
+
+The live blobs travel in the tarball rather than the cache because they
+cannot be fetched again: they are pinned to the archive as it was, and the
+archive does not keep superseded indexes.
+
+What CI cannot do is anything that re-aggregates every snapshot — an
+`AGGREGATE_VERSION` bump, or `--refresh-live` — since that needs every blob
+the window has ever referenced. Do those on a machine with the full cache,
+then replace the asset from it:
+
+```console
+$ ./ci/state pack state.tar
+$ gh release upload cache-state state.tar --clobber
+```
+
+Everything in the state is named by content or by snapshot stamp, so the
+copy here and the copy in CI never conflict; the pin is the exception, which
+is why CI never refreshes it.
+
 ## What counts as a kernel
 
 Every binary built by a source that ships *something* which

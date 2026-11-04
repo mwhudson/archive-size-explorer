@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+# Copyright (C) 2026 Canonical Ltd.
+# SPDX-License-Identifier: GPL-3.0-only
+"""Carry the part of the cache that a scheduled build cannot do without.
+
+  ci/state pack state.tar      # what has to survive between runs
+  ci/state unpack state.tar    # into the cache, alongside whatever is there
+  ci/state prune               # trim blobs to what next week needs
+
+A routine build only aggregates the snapshots it has never seen; every other
+one comes back from aggregate/, keyed through release/.  Those two are the
+state: lose them and the next build re-aggregates the whole window, which
+needs every blob the window ever referenced -- tens of GiB to download, and
+more than a CI job has time for.  So they travel as a tarball, and the blobs,
+which only make the next new snapshot cheaper, are left to a cache that may
+evict them.
+
+The one exception among the blobs is the live series'.  Those are pinned by
+checksum to the archive as it was when the pin was taken, and the archive
+does not keep old indexes: once trusty or xenial publishes, a pinned blob can
+no longer be fetched at all.  They are a few MiB, so they go in the tarball.
+
+Everything in here is named by its content or by a snapshot stamp, so two
+copies of it never disagree; unpacking over an existing cache only adds to it.
+live/pin is the one file that is not, and it has to travel with the
+aggregates built under it -- which is why the scheduled build never refreshes
+the live state itself.
+"""
+
+import argparse
+import os
+import sys
+import tarfile
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                ".."))
+
+from archive_sizes import (  # noqa: E402
+    LIVE_SERIES, Builder, Cache, default_cache_dir, is_live, log,
+)
+
+STATE_DIRS = ["aggregate", "release", "live"]
+
+# How many of the newest snapshot stamps to keep blobs for.  Two, because the
+# monthly and weekly windows end on different stamps -- the 1st of the month
+# and the latest Wednesday -- and each top-up wants its own predecessor's.
+KEEP_STAMPS = 2
+
+
+class NoFetch:
+    """Planning reads cached Releases only; anything else is a bug here."""
+    jobs = 1
+    bytes_downloaded = 0
+
+    def get(self, url, tolerate_404=True, head=False):
+        raise RuntimeError("ci/state does not fetch: %s" % url)
+
+
+def blobs_for(cache, stamp, series):
+    builder = Builder(cache, NoFetch())
+    out = set()
+    for name in series:
+        plan = builder.plan(stamp, name)
+        for ix in plan or ():
+            out.add(ix.sha)
+    return out
+
+
+def live_blobs(cache):
+    pin = cache.get_live_pin()
+    return blobs_for(cache, pin, LIVE_SERIES) if pin else set()
+
+
+def cmd_pack(args):
+    cache = Cache(args.cache)
+    live = live_blobs(cache)
+    with tarfile.open(args.file, "w") as tar:
+        for d in STATE_DIRS:
+            path = os.path.join(args.cache, d)
+            if os.path.isdir(path):
+                tar.add(path, arcname=d)
+        for sha in sorted(live):
+            path = cache.blob_path(sha)
+            if os.path.exists(path):
+                tar.add(path, arcname=os.path.relpath(path, args.cache))
+    log("packed %s: %s, and %d live blobs (%.1f MiB)"
+        % (args.file, ", ".join(STATE_DIRS), len(live),
+           os.path.getsize(args.file) / 2 ** 20))
+    return 0
+
+
+def cmd_unpack(args):
+    os.makedirs(args.cache, exist_ok=True)
+    with tarfile.open(args.file) as tar:
+        tar.extractall(args.cache, filter="data")
+    log("unpacked %s into %s" % (args.file, args.cache))
+    return 0
+
+
+def cmd_prune(args):
+    cache = Cache(args.cache)
+    stamps = sorted(s for s in os.listdir(os.path.join(args.cache, "release"))
+                    if not is_live(s))[-KEEP_STAMPS:]
+    series = sorted({f[:-len(".tsv.gz")].split("-")[0]
+                     for s in stamps
+                     for f in os.listdir(os.path.join(args.cache, "release",
+                                                      s))})
+    keep = live_blobs(cache)
+    for stamp in stamps:
+        keep |= blobs_for(cache, stamp, series)
+    root = os.path.join(args.cache, "blobs")
+    gone = kept = 0
+    for dirpath, _, names in os.walk(root):
+        for name in names:
+            if name[:-len(".tsv.gz")] in keep:
+                kept += 1
+            else:
+                os.remove(os.path.join(dirpath, name))
+                gone += 1
+    log("kept %d blobs for %s and the live pin; removed %d"
+        % (kept, " ".join(stamps), gone))
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--cache", default=default_cache_dir(), metavar="DIR")
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("pack", help="write the state tarball")
+    p.add_argument("file")
+    p.set_defaults(func=cmd_pack)
+    p = sub.add_parser("unpack", help="add a state tarball to the cache")
+    p.add_argument("file")
+    p.set_defaults(func=cmd_unpack)
+    p = sub.add_parser("prune", help="drop blobs the next build will not "
+                       "need; destructive, so for a CI cache, not yours")
+    p.set_defaults(func=cmd_prune)
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

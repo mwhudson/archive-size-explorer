@@ -1,0 +1,118 @@
+# Copyright (C) 2026 Canonical Ltd.
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Top the monthly and weekly pages up to today and publish them to Pages.
+#
+# Only a top-up happens here.  Anything that re-aggregates every snapshot -- an
+# AGGREGATE_VERSION bump, or --refresh-live -- needs the whole blob cache and
+# more time than a job gets, so it is done on a machine that has the cache,
+# and the result uploaded as the state asset by hand; see ci/state.
+name: pages
+
+on:
+  schedule:
+    # Wednesdays, because 2023-03-01 was one and the weekly window steps in
+    # sevens from it; early enough that the 00:00 snapshot exists.
+    - cron: "30 6 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: write     # replacing the state asset on its release
+  pages: write
+  id-token: write
+
+# Two runs at once would race to replace the state asset, and the loser's
+# snapshot would have to be aggregated again.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CACHE: ${{ github.workspace }}/.cache/archive-size-explorer
+  XDG_CACHE_HOME: ${{ github.workspace }}/.cache
+  STATE_TAG: cache-state
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - run: pip install requests
+
+      # Only what next week's new snapshot shares with this week's.  Losing
+      # it costs a slower run, never a wrong one, so an evictable cache is
+      # the right home for it.
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CACHE }}/blobs
+          key: blobs-${{ github.run_id }}
+          restore-keys: blobs-
+
+      - name: Fetch the state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$STATE_TAG" --pattern state.tar --dir "$RUNNER_TEMP"
+          ./ci/state unpack "$RUNNER_TEMP/state.tar"
+
+      - name: Build
+        run: |
+          mkdir -p site
+          ./archive-size-explorer build -o site/archive-size-monthly.html
+          ./archive-size-explorer build --every week -o site/archive-size-weekly.html
+
+      - name: Test
+        run: |
+          ./tests/check site/archive-size-monthly.html
+          ./tests/check site/archive-size-weekly.html
+
+      # Saved before deploying, so a deploy that fails does not cost the
+      # aggregation.  The asset is replaced rather than versioned: every file
+      # in it is append-only, so the newest is a superset of the rest.
+      - name: Save the state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./ci/state pack "$RUNNER_TEMP/state.tar"
+          gh release upload "$STATE_TAG" "$RUNNER_TEMP/state.tar" --clobber
+
+      - run: ./ci/state prune
+
+      - uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CACHE }}/blobs
+          key: blobs-${{ github.run_id }}
+
+      - name: Index page
+        run: |
+          cat > site/index.html <<'EOF'
+          <!doctype html>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Size of the Ubuntu archive</title>
+          <h1>Size of the Ubuntu archive</h1>
+          <ul>
+          <li><a href="archive-size-monthly.html">Monthly</a>, since 2023-03</li>
+          <li><a href="archive-size-weekly.html">Weekly</a>, since 2023-03</li>
+          </ul>
+          EOF
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
