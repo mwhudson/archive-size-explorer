@@ -98,7 +98,7 @@ CANDIDATE_SERIES = [
 # into the whole-snapshot aggregate.
 #
 # A snapshot normally has to be aggregated whole, because series share one
-# pool/: at 2026-11-01, 1.6 TiB of the archive -- 16.0% of it -- is referenced
+# pool/: at 2026-11-01, 2.0 TiB of the archive -- 19.8% of it -- is referenced
 # by more than one series, and aggregating series separately would count each
 # of those files once per series that mentions it.  "report" prints that
 # figure.  A series old enough to share nothing escapes that, and can be
@@ -106,10 +106,11 @@ CANDIDATE_SERIES = [
 #
 # Empty on purpose, but kept: it is the cheap way to aggregate a series that
 # shares nothing, since it costs that series alone rather than a whole
-# snapshot.  xenial qualified -- measured
-# at exactly 0 bytes of overlap against every other series -- and was carried
-# here until reading it from the live archive showed 413.6 GiB against the
-# 121.5 GiB the snapshot service can see, so it moved to LIVE_SERIES.
+# snapshot.  xenial qualified -- measured at exactly 0 bytes of overlap
+# against every other series, before upstream tarballs were counted once and
+# gave it some -- and was carried here until reading it from the live archive
+# showed 413.6 GiB against the 121.5 GiB the snapshot service can see, so it
+# moved to LIVE_SERIES.
 # Anything put here needs that same zero-overlap measurement first;
 # "breakdown" merges the pool for real instead of trusting the split, so
 # comparing its archive total against the page's is the check.
@@ -249,8 +250,20 @@ class Cache:
     def blob_path(self, sha):
         return self._path("blobs", sha[:2], sha + ".tsv.gz")
 
-    def have_blob(self, sha):
-        return os.path.exists(self.blob_path(sha))
+    def have_blob(self, sha, sources=False):
+        """Whether this blob is cached, and in a shape we can still read.
+
+        Only a Sources blob has ever changed shape, so only that is checked,
+        on its first line: a blob is slimmed in one go, so the rest matches.
+        """
+        path = self.blob_path(sha)
+        if not os.path.exists(path):
+            return False
+        if not sources:
+            return True
+        with gzip.open(path, "rb") as f:
+            first = f.readline()
+        return not first or first.count(b"\t") == SOURCES_COLUMNS - 1
 
     def put_blob(self, sha, data):
         path = self.blob_path(sha)
@@ -376,9 +389,9 @@ class Cache:
                               int(fields[3]), fields[4])] = [
                         int(fields[5]), int(fields[6]), int(fields[7])]
                 elif kind == "f":
-                    by_flavour[(int(fields[0]), fields[1], int(fields[2]),
-                                fields[3])] = [
-                        int(fields[4]), int(fields[5]), int(fields[6])]
+                    by_flavour[(int(fields[0]), fields[1], fields[2],
+                                int(fields[3]), fields[4])] = [
+                        int(fields[5]), int(fields[6]), int(fields[7])]
                 elif kind == "i":
                     by_index[(fields[0], fields[1], fields[2], fields[3])] = [
                         int(fields[4]), int(fields[5]), int(fields[6]),
@@ -396,8 +409,8 @@ class Cache:
                 f.write("c\t%d\t%s\t%s\t%d\t%s\t%d\t%d\t%d\n"
                         % (k[0], k[1], k[2], k[3], k[4], *by_class[k]))
             for k in sorted(by_flavour):
-                f.write("f\t%d\t%s\t%d\t%s\t%d\t%d\t%d\n"
-                        % (k[0], k[1], k[2], k[3], *by_flavour[k]))
+                f.write("f\t%d\t%s\t%s\t%d\t%s\t%d\t%d\t%d\n"
+                        % (k[0], k[1], k[2], k[3], k[4], *by_flavour[k]))
             for k in sorted(by_index):
                 f.write("i\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\n"
                         % (k[0], k[1], k[2], k[3], *by_index[k]))
@@ -625,15 +638,29 @@ def slim_packages(raw):
     return b"\n".join(out)
 
 
+#   foo_1.2.orig.tar.xz, foo_1.2.orig-docs.tar.gz, foo_1.2.orig.tar.xz.asc
+ORIG_TARBALL = re.compile(rb"\.orig(-[^.]+)?\.tar\.[^.]+(\.asc)?$")
+
+
 def slim_sources(raw):
-    """Reduce a Sources index the same way, summing the .dsc/tarball sizes.
+    """Reduce a Sources index the same way, one row per source version.
 
     Emitted with the source name in both the package and source columns so the
     aggregator can treat it exactly like a binary index under arch 'source'.
+
+    The size column is only the files this version has to itself -- .dsc,
+    debian.tar, a native tarball -- and an eighth column lists the upstream
+    tarballs as name:size,name:size.  Those are shared: 2.42.2-1ubuntu1 and
+    2.42.2-1ubuntu2 point at one 2.42.2.orig.tar.xz in the pool, and summing
+    each version's Files: counted it once per version, which at 2026-11-01 was
+    321 GiB, nearly a third of the source column.  load_slim turns each into a
+    row keyed by its file name, so the pool dedup applies to it like anything
+    else.
     """
     out = []
     pkg = ver = None
     total = 0
+    origs = []
     in_files = False
     for line in raw.split(b"\n"):
         if line.startswith(b"Package: "):
@@ -649,17 +676,29 @@ def slim_sources(raw):
             if in_files:
                 fields = line.split()
                 if len(fields) >= 3:
-                    total += int(fields[1])
+                    if ORIG_TARBALL.search(fields[2]):
+                        origs.append(b"%s:%d" % (fields[2], int(fields[1])))
+                    else:
+                        total += int(fields[1])
         elif not line.strip():
             if pkg is not None:
                 out.append(b"\t".join([
-                    pkg, ver or b"", b"source", b"%d" % total, b"0", pkg, b"0"]))
+                    pkg, ver or b"", b"source", b"%d" % total, b"0", pkg, b"0",
+                    b",".join(origs)]))
             pkg = ver = None
             total = 0
+            origs = []
             in_files = False
         else:
             in_files = False
     return b"\n".join(out)
+
+
+# Columns in a slimmed Sources row.  Rows from before the upstream tarballs
+# were split out have seven, and are re-fetched rather than read: they summed
+# the shared tarball into every version, and nothing in them says which part
+# of the size it was.
+SOURCES_COLUMNS = 8
 
 
 # ---------------------------------------------------------------- classifying
@@ -755,10 +794,13 @@ def is_objects_for(name, kvers):
 
 class Row:
     __slots__ = ("ver", "arch", "size", "isize", "src", "prov", "mask",
-                 "component", "smask")
+                 "component", "smask", "count")
 
     def __init__(self, ver, arch, size, isize, src, prov, mask, component,
-                 smask=0):
+                 smask=0, count=1):
+        # How many packages this row is: 0 for an upstream tarball, which is a
+        # file in the pool but part of a source package counted elsewhere.
+        self.count = count
         self.smask = smask
         self.ver = ver
         self.arch = arch
@@ -786,6 +828,11 @@ def load_slim(cache, sha, component, dir_arch, pocket_bit, into):
     exception is Architecture: all, which really is one file listed in every
     binary-<arch> directory, and has to collapse to a single "all" row rather
     than being counted once per architecture.
+
+    A Sources row also names its upstream tarballs, and each becomes a row of
+    its own keyed by file name in place of a version, so that every version
+    sharing one finds the same row.  It counts as no package: the source
+    version that names it is already counted.
     """
     data = cache.get_blob(sha)
     if not data:
@@ -793,7 +840,8 @@ def load_slim(cache, sha, component, dir_arch, pocket_bit, into):
     for line in data.split(b"\n"):
         if not line:
             continue
-        pkg, ver, arch, size, isize, src, prov = line.split(b"\t")
+        fields = line.split(b"\t")
+        pkg, ver, arch, size, isize, src, prov = fields[:7]
         if arch != b"all" and dir_arch is not None:
             arch = dir_arch
         key = (pkg, ver, arch)
@@ -804,6 +852,22 @@ def load_slim(cache, sha, component, dir_arch, pocket_bit, into):
         else:
             row.mask |= pocket_bit
             row.prov = row.prov or prov == b"1"
+        if arch != b"source":
+            continue
+        if len(fields) != SOURCES_COLUMNS:
+            raise RuntimeError("blob %s was slimmed before upstream tarballs "
+                               "were split out; it needs fetching again" % sha)
+        if not fields[7]:
+            continue
+        for item in fields[7].split(b","):
+            name, _, osize = item.rpartition(b":")
+            okey = (pkg, name, arch)
+            orow = into.get(okey)
+            if orow is None:
+                into[okey] = Row(name, "source", int(osize), 0, src.decode(),
+                                 False, pocket_bit, component, count=0)
+            else:
+                orow.mask |= pocket_bit
 
 
 def kernel_predicate(rows):
@@ -864,7 +928,7 @@ def aggregate(rows, is_kernel_row=None):
         is_kernel_row = kernel_predicate(rows)
 
     by_class = defaultdict(lambda: [0, 0, 0])    # smask, arch, comp, mask, class
-    by_flavour = defaultdict(lambda: [0, 0, 0])  # smask, arch, mask, flavour
+    by_flavour = defaultdict(lambda: [0, 0, 0])  # the same, flavour for class
 
     for (pkg, _ver, _arch), row in rows.items():
         name = pkg.decode()
@@ -876,12 +940,13 @@ def aggregate(rows, is_kernel_row=None):
         else:
             cls = classify(name)
         acc = by_class[(row.smask, row.arch, row.component, row.mask, cls)]
-        acc[0] += 1
+        acc[0] += row.count
         acc[1] += row.size
         acc[2] += row.isize * 1024
         if is_kernel:
-            acc = by_flavour[(row.smask, row.arch, row.mask, flavour(row.src))]
-            acc[0] += 1
+            acc = by_flavour[(row.smask, row.arch, row.component, row.mask,
+                              flavour(row.src))]
+            acc[0] += row.count
             acc[1] += row.size
             acc[2] += row.isize * 1024
 
@@ -901,7 +966,11 @@ def aggregate(rows, is_kernel_row=None):
 # before the registry existed were numbered differently, and reading one back
 # under a key that happens to match would put one series' bytes under another
 # series' name.  The version is what stops that.
-AGGREGATE_VERSION = 3
+#
+# 4 split upstream tarballs out of the source rows, so a .orig.tar shared by
+# several versions of a source is counted once, and gave the flavour table a
+# component column so the flavour chart can follow the Component filter.
+AGGREGATE_VERSION = 4
 
 
 def aggregate_key(series, components, arches, pockets, sources,
@@ -1093,7 +1162,7 @@ class Builder:
         return entries
 
     def _ensure_blob(self, snapshot, suite, path, sha, algo):
-        if self.cache.have_blob(sha):
+        if self.cache.have_blob(sha, "/source/Sources" in path):
             return
         url = dists_url(snapshot, suite, path)
         body = self.fetcher.get(url)
@@ -1170,7 +1239,8 @@ class Builder:
         wanted = self.plan(snapshot, series)
         if wanted is None:
             return None
-        missing = [ix for ix in wanted if not self.cache.have_blob(ix.sha)]
+        missing = [ix for ix in wanted
+                   if not self.cache.have_blob(ix.sha, ix.arch == "source")]
         self.hits += len(wanted) - len(missing)
         if missing:
             suite_of = {}
@@ -1207,13 +1277,14 @@ def merge_rows(into, rows, series_bit):
     That mask is what lets the page take any set of series and count each file
     once, exactly as the pocket mask does for pockets.  Summing per-series
     totals instead would count a shared file once per series that mentions it,
-    which for 2026-09 is 1.2 TiB, 12.6% of the archive.
+    which for 2026-09 is 1.5 TiB, 16.6% of the archive.
     """
     for key, row in rows.items():
         cur = into.get(key)
         if cur is None:
             into[key] = Row(row.ver, row.arch, row.size, row.isize, row.src,
-                            row.prov, row.mask, row.component, series_bit)
+                            row.prov, row.mask, row.component, series_bit,
+                            row.count)
         else:
             cur.mask |= row.mask
             cur.prov = cur.prov or row.prov

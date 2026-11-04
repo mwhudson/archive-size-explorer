@@ -751,12 +751,13 @@ function scanClass(fn) {
 
 function scanFlavour(fn) {
   const rows = DATA.byFlavour.rows, pm = pocketMask(), sm = seriesMask();
-  const vi = metricIdx() - 1;   // stride 8: count at 5, size 6, isize 7
-  for (let i = 0; i < rows.length; i += 8) {
-    if (!(rows[i + 3] & pm)) continue;
+  const vi = metricIdx();   // byClass's columns, flavour where class goes
+  for (let i = 0; i < rows.length; i += 9) {
+    if (!(rows[i + 4] & pm)) continue;
     if (!(rows[i + 1] & sm)) continue;
     if (!state.arch.has(rows[i + 2])) continue;
-    fn(rows[i], rows[i + 1], rows[i + 2], rows[i + 4], rows[i + 5], rows[i + vi]);
+    if (!state.comp.has(rows[i + 3])) continue;
+    fn(rows[i], rows[i + 1], rows[i + 2], rows[i + 5], rows[i + 6], rows[i + vi]);
   }
 }
 

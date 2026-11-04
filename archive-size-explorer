@@ -253,8 +253,9 @@ def aggregate_snapshot(builder, snap, series_list, live_names=(),
     has to be merged here rather than added afterwards: the pool is shared
     across series, and a file two of them reference needs one row with a wider
     mask, not two rows.  Folding trusty and xenial in separately overstated
-    the archive by 36.14 GiB, nearly all of it arch-independent data packages
-    at identical versions across releases.
+    the archive by 59.36 GiB at 2026-11-01: upstream tarballs a later series
+    still uses, and arch-independent data packages at identical versions
+    across releases.
     """
     whole = {}
     plans = []
@@ -507,9 +508,10 @@ def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None,
     # index table too, or its row would have nowhere to go.
     arches, arch_i = index({k[2] for k in byclass} | {k[2] for k in byflavour}
                            | {k[4] for k in byindex})
-    comps, comp_i = index({k[3] for k in byclass} | {k[3] for k in byindex})
+    comps, comp_i = index({k[3] for k in byclass} | {k[3] for k in byflavour}
+                          | {k[3] for k in byindex})
     classes, class_i = index({k[5] for k in byclass})
-    flavours, flav_i = index({k[4] for k in byflavour})
+    flavours, flav_i = index({k[5] for k in byflavour})
     pocket_i = {p: i for i, p in enumerate(POCKETS)}
 
     # keep only the series that turned up, and renumber the masks to match
@@ -538,9 +540,10 @@ def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None,
         cls_rows += [snap_i[snap], shrink(smask), arch_i[arch], comp_i[comp],
                      mask, class_i[cls], acc[0], acc[1], acc[2]]
     flav_rows = []
-    for (snap, smask, arch, mask, flav), acc in sorted(byflavour.items()):
-        flav_rows += [snap_i[snap], shrink(smask), arch_i[arch], mask,
-                      flav_i[flav], acc[0], acc[1], acc[2]]
+    for (snap, smask, arch, comp, mask, flav), acc in sorted(
+            byflavour.items()):
+        flav_rows += [snap_i[snap], shrink(smask), arch_i[arch], comp_i[comp],
+                      mask, flav_i[flav], acc[0], acc[1], acc[2]]
     # One row per index file, so the pocket is a plain number here rather than
     # the bitmask the other tables carry: a Packages file belongs to exactly
     # one suite, and there is nothing to deduplicate.
@@ -581,7 +584,7 @@ def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None,
             "flavours": flavours,
         },
         "byClass": {"stride": 9, "rows": cls_rows},
-        "byFlavour": {"stride": 8, "rows": flav_rows},
+        "byFlavour": {"stride": 9, "rows": flav_rows},
         "byIndex": {"stride": 9, "rows": idx_rows},
     }
 
@@ -589,7 +592,7 @@ def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None,
 # How many leading columns of each table are keys rather than measurements.
 # Keys are small, and the rows are emitted in sorted order, so a key column
 # delta-encodes to almost nothing; a size column does not and is left alone.
-TABLE_KEYS = {"byClass": 6, "byFlavour": 5, "byIndex": 5}
+TABLE_KEYS = {"byClass": 6, "byFlavour": 6, "byIndex": 5}
 
 
 def varint(n, out):
@@ -706,7 +709,7 @@ def cmd_build(args):
                   mirrored=mirrored, live_names=live_names)
     log("collected %d class rows, %d flavour rows, %d index rows across %s"
         % (len(data["byClass"]["rows"]) // 9,
-           len(data["byFlavour"]["rows"]) // 8,
+           len(data["byFlavour"]["rows"]) // 9,
            len(data["byIndex"]["rows"]) // 9, ", ".join(seen)))
 
     if args.json:

@@ -9,7 +9,7 @@ It measures three things: the size of `pool/`, which is the packages; the size
 of `dists/`, which is the indexes `apt update` downloads before it can install
 anything; and how much of each is kernels. That last one is where the tool
 started and is still the most striking number in it — at 2026-11-01 kernel
-packages are **47.1%** of the 9.3 TiB the eleven currently-mirrored series
+packages are **48.4%** of the 9.0 TiB the eleven currently-mirrored series
 occupy.
 
 The output is a single HTML file: open it with `file://`, mail it to someone,
@@ -164,16 +164,16 @@ of the per-series ones — see [How things are counted](#how-things-are-counted)
 `report` works straight off the snapshot service, so its total is over a
 different set of series than the page's: it includes the ones the archive has
 since dropped and leaves out trusty and xenial, which only the live read
-reaches. At 2026-11-01 the two reconcile as 10.3 TiB, plus 669.53 GiB for
-trusty and xenial, less the 1693.9 GiB belonging to nothing still carried,
-giving the 9.3 TiB the page opens with.
+reaches. At 2026-11-01 the two reconcile as 9.9 TiB, plus 638.55 GiB for
+trusty and xenial, less the 1582.5 GiB belonging to nothing still carried,
+giving the 9.0 TiB the page opens with.
 
 ```console
 $ ./archive-size-explorer report --snapshot 2026-11
 ...
-sum of series                              4.6 TiB /   11.9 TiB   38.5%
-whole archive (pool deduped)               4.6 TiB /   10.3 TiB   44.5%
-...files shared between series             1.6 TiB  (16.0% of the archive, ...)
+sum of series                              4.5 TiB /   11.8 TiB   38.4%
+whole archive (pool deduped)               4.5 TiB /    9.9 TiB   45.8%
+...files shared between series             2.0 TiB  (19.8% of the archive, ...)
 ```
 
 `breakdown` answers the other half of the question — if kernels are not the
@@ -184,13 +184,13 @@ counted the same deduplicated way as the archive-wide line above:
 $ ./archive-size-explorer breakdown --no-kernels --family -n 6
 20260901; 12 series (bionic, focal, jammy, ...)
     bytes   %arch   files  vers  family
-488.8 GiB   4.95%   47618    12  gcc-cross
-284.7 GiB   2.88%   38828    12  gcc-cross-ports
-283.8 GiB   2.87%    5382    15  openjdk
-182.3 GiB   1.84%   29756    14  gcc
-135.8 GiB   1.37%   10097    31  nvidia-graphics-drivers
-135.0 GiB   1.37%   21240    21  llvm-toolchain
-  4.1 TiB  42.09%                ...and 49972 more
+488.8 GiB   5.16%   47618    12  gcc-cross
+284.7 GiB   3.00%   38828    12  gcc-cross-ports
+282.5 GiB   2.98%    5504    15  openjdk
+178.7 GiB   1.89%   29795    14  gcc
+131.5 GiB   1.39%    1642     4  mysql
+129.2 GiB   1.36%   21359    21  llvm-toolchain
+  3.7 TiB  40.23%                ...and 49972 more
 ```
 
 `--family` is what makes that readable: it strips a trailing version token, so
@@ -205,13 +205,13 @@ Give it a window instead of a single snapshot and it tracks each row over time.
 ```console
 $ ./archive-size-explorer breakdown --from 2026-07 --match='-1[0-9]-[0-9]+$'
 source                      202607    202608    202609   growth      share
-archive total              9.0 TiB   9.3 TiB   9.6 TiB
+archive total              8.7 TiB   8.9 TiB   9.3 TiB
 ...of which kernels        3.7 TiB   3.8 TiB   4.1 TiB
 
 libcublas-13-1             4.1 GiB   8.3 GiB   8.3 GiB    2.00x     +0.04pp
-nsight-systems-13-1        3.1 GiB   6.2 GiB   6.2 GiB    2.00x     +0.03pp
 libcublas-13-3               0.0 B     0.0 B   4.2 GiB      new     +0.04pp
 libcublas-13-2               0.0 B   4.2 GiB   4.2 GiB      new     +0.04pp
+nsight-systems-13-1        3.1 GiB   3.9 GiB   3.9 GiB    1.27x     +0.01pp
 ...
 ```
 
@@ -266,7 +266,7 @@ would still be found.
 
 ## How things are counted
 
-Four rules, and they are what make the figures here differ from a naive sum of
+Five rules, and they are what make the figures here differ from a naive sum of
 the indexes.
 
 **A file is counted once, however many indexes list it.** The unit is one file
@@ -281,8 +281,10 @@ once when you tick both.
 
 **Series share one `pool/`.** There is a single pool for the whole archive, and
 a package version that two series both reference is one file on disk. As of
-2026-09 that is 626k files — 1.2 TiB, 12.7% of the archive — mostly
-`Architecture: all` and source packages that have not changed in years.
+2026-09 that is 722k files, and adding up the series counts 1.5 TiB of them
+more than once — 16.6% of the archive. They are mostly `Architecture: all`
+packages, source packages that have not changed in years, and the upstream
+tarballs that one series' revision of a source shares with another's.
 
 Every total counts such a file once for whatever set of series you have ticked,
 the same way pockets work. The one place that cannot hold is a per-series line
@@ -291,8 +293,8 @@ of noble's, so it is counted in both and those lines add up to more than the
 archive holds. The last column of the Tables view and the Archive size tab
 both give the deduplicated figure.
 
-The difference is not small: at 2026-09 the per-series numbers sum to 10.9 TiB
-against a real 9.6 TiB, and the kernel share moves from 38.0% to 42.6% — the
+The difference is not small: at 2026-09 the per-series numbers sum to 10.8 TiB
+against a real 9.3 TiB, and the kernel share moves from 37.9% to 44.0% — the
 shared files are almost all *not* kernels, so dropping the duplicates makes
 kernels a bigger fraction of what is left.
 
@@ -301,6 +303,14 @@ package is listed in every `binary-<arch>` index but exists once in the pool,
 so it gets its own row rather than being multiplied by the number of
 architectures. Source packages (the `.dsc`/tarball/diff sizes from `Sources`)
 appear the same way, under `source`.
+
+**An upstream tarball is a file of its own.** `util-linux 2.42.2-1ubuntu1` and
+`2.42.2-1ubuntu2` are two source packages but one `2.42.2.orig.tar.xz` in the
+pool, so each `.orig` tarball is counted once under its file name, however
+many versions name it, and only the `.dsc` and packaging are a version's own.
+Adding up each version's files instead counted 321 GiB of source too many at
+2026-11-01, nearly a third of the `source` row — and 33 GiB of it was kernel
+sources, which carry several revisions of one upstream at once.
 
 **Architectures come from the index directory, not the Architecture field.**
 Packages in `binary-amd64v3` declare `Architecture: amd64` while being a
@@ -344,10 +354,10 @@ and xenial.
 
 Dropping a series does not drop all of its bytes. A pool file it shared with a
 series still carried is still on the mirror, so only what nobody else
-references stops counting: of kinetic's 489.66 GiB at the snapshot after it
-went, 324.40 GiB was exclusively its own and left, and 165.27 GiB stayed
+references stops counting: of kinetic's 485.55 GiB at the snapshot after it
+went, 299.18 GiB was exclusively its own and left, and 186.37 GiB stayed
 because jammy and others reference the same files. Across the four removed
-series that is 1693.9 GiB no longer counted at the latest snapshot.
+series that is 1582.5 GiB no longer counted at the latest snapshot.
 
 **Which series are still carried is asked of the archive, not derived.** It
 cannot be read out of the snapshot data, for the reason above — `dists/kinetic`
@@ -370,15 +380,18 @@ before the window opened cannot have changed during it, so today's content is
 its content throughout. Reading xenial both ways says what the gap is worth —
 121.5 GiB from the snapshot service against 413.6 GiB from the archive, the
 missing three quarters being its release pocket plus the architectures the
-service does not carry for it.
+service does not carry for it. (Both measured before upstream tarballs were
+counted once; xenial reads 409.73 GiB from the archive now.)
 
 They are merged into each snapshot's pool map rather than added to it, for the
 same reason a snapshot is aggregated whole: a file two series reference needs
 one row with a wider mask, not two rows. Added separately they would overstate
-the archive by 36.14 GiB, nearly all of it arch-independent data packages
-carrying identical versions across releases — `sauerbraten 0.0.20140302-1` is
-one pool file that xenial and bionic both point at. Their real contribution is
-669.53 GiB, against 705.67 for the sum of their two per-series totals.
+the archive by 59.36 GiB: 40.16 GiB of it upstream tarballs that a later
+series' revision of the same source still uses, and most of the rest
+arch-independent data packages carrying identical versions across releases —
+`sauerbraten 0.0.20140302-1` is one pool file that xenial and bionic both
+point at. Their real contribution is 638.55 GiB, against 697.91 for the sum of
+their two per-series totals.
 
 A live suite has no stamp that would make a cached aggregate valid forever, so
 its content digest goes into the aggregate key as `live-<digest>`. Left to
@@ -429,9 +442,9 @@ what you are paying for:
 | entries in them | 2.70M | 7.43M |
 | lists, compressed (`.xz`) | 586 MiB | 1.6 GiB |
 | lists, uncompressed | 2.8 GiB | 8.0 GiB |
-| lists as a share of the archive | 0.022% | 0.016% |
+| lists as a share of the archive | 0.023% | 0.017% |
 | **kernel share of the entries** | **5.7%** | **6.1%** |
-| **kernel share of the bytes** | **29.5%** | **42.6%** |
+| **kernel share of the bytes** | **30.3%** | **44.0%** |
 
 Kernel packages are few and enormous. They have gone from under a third of the
 archive to well over two fifths by size while barely moving as a fraction of
@@ -440,7 +453,7 @@ lists have grown 2.8x since 2023-03 for the ordinary reason: more series alive
 at once, each with more packages in it.
 
 Metadata is also not where the archive's disk goes, and is falling as a share
-of it: 1.6 GiB of compressed lists against 9.6 TiB of packages. Mirrors carry a
+of it: 1.6 GiB of compressed lists against 9.3 TiB of packages. Mirrors carry a
 `.gz` of every list as well as the `.xz`, so a mirror holds rather more than
 that figure — but not enough to change the conclusion.
 
@@ -465,7 +478,7 @@ them. It is frozen on release day, so it carries one ABI per flavour alongside
 the whole rest of the archive, while every ABI published since lands in
 `-updates` and `-security`. Untick `release` and the kernel share of the lists
 goes from 6.1% to **30.8%** — where it has sat, between 30% and 35%, ever since
-2023-03, while the byte share was climbing from 29.5% to 42.6%. The ABIs piling
+2023-03, while the byte share was climbing from 30.3% to 44.0%. The ABIs piling
 up are getting bigger, not more numerous.
 
 The component split says the same from the other side: `universe` is 79% of the
@@ -504,7 +517,7 @@ where the explanatory prose lives:
 ```console
 $ ./tests/check page.html
 notes: 55 ok, 0 failed
-tabs: 21 ok, 0 failed
+tabs: 23 ok, 0 failed
 url: 30 ok, 0 failed
 ```
 

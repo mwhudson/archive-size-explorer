@@ -45,6 +45,24 @@ suite(async ({page, check}) => {
   T.resetDefaults();
   check("Reset leaves the tab alone", T.state.view, "lists");
 
+  // The flavour chart follows the Component filter like the rest of the tab.
+  // It used to have no component column to filter on, and drew every
+  // component whatever was ticked.
+  const flavours = () => {
+    T.state.view = "breakdown";
+    T.state.zoom = "by-flavour";
+    T.render();
+    return T.S.document.getElementById("views").textContent;
+  };
+  T.resetDefaults();
+  const every = flavours();
+  T.state.comp.clear();
+  T.state.comp.add(T.D.components.indexOf("main"));
+  check("flavours follow Component", flavours() !== every, true);
+  T.resetDefaults();
+  check("and come back with it", flavours(), every);
+  T.state.zoom = null;
+
   // A link into a tab still works, and an unknown one falls back.
   const T2 = await load(page, "#v=breakdown");
   check("link into a tab", T2.state.view, "breakdown");

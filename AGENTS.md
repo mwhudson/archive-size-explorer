@@ -14,7 +14,7 @@ framework, so the way to check a change is to execute it. That is what
 $ ./archive-size-explorer build -o page.html
 $ ./tests/check page.html
 notes: 55 ok, 0 failed
-tabs: 21 ok, 0 failed
+tabs: 23 ok, 0 failed
 url: 30 ok, 0 failed
 ```
 
