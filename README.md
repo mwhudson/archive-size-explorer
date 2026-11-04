@@ -5,6 +5,11 @@ growing? This reads the binary and source indexes from
 <https://snapshot.ubuntu.com/> and writes one self-contained HTML page that
 answers those questions at any point in time since 2023-03-01.
 
+The pages are rebuilt every Wednesday and published:
+[monthly](https://mwhudson.github.io/archive-size-explorer/archive-size-monthly.html)
+and
+[weekly](https://mwhudson.github.io/archive-size-explorer/archive-size-weekly.html).
+
 It measures three things: the size of `pool/`, which is the packages; the size
 of `dists/`, which is the indexes `apt update` downloads before it can install
 anything; and how much of each is kernels. That last one is where the tool
