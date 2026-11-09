@@ -545,7 +545,11 @@ dropped is 48.9%.
 
 `archive_sizes.py` does the work; `archive-size-explorer` is the CLI;
 `template.html` is the page, with the dataset spliced into it as a small JSON
-header plus one packed blob. `tests/` holds the page's tests, which run its
+header plus one packed blob. The page is styled with
+[Vanilla](https://vanillaframework.io/), Canonical's CSS framework, and set in
+the Ubuntu font; both are in `vendor/` and inlined into the page by the build,
+so it still makes no network requests. `vendor/update` recompiles the CSS for
+a new Vanilla release. `tests/` holds the page's tests, which run its
 JavaScript under a stub DOM in node — the tab row, the URL round trip, and
 where the explanatory prose lives:
 
@@ -702,3 +706,8 @@ details.
 
 You should have received a copy of the GNU General Public License along with
 this program.  If not, see <https://www.gnu.org/licenses/>.
+
+`vendor/vanilla.css` is compiled from Vanilla, under the GNU Lesser General
+Public License version 3 (`vendor/LICENSE.vanilla`). The fonts in
+`vendor/fonts` are the Ubuntu font family, under the Ubuntu Font Licence 1.0
+(`vendor/fonts/LICENCE.txt`).

@@ -1,0 +1,31 @@
+// The subset of Vanilla the page uses, compiled to vendor/vanilla.css by
+// vendor/update.  Only these patterns are included because the whole
+// framework is several hundred KiB, all of it inlined into every page.
+//
+// The fonts are inlined too, so the page still opens from file:// or a mail
+// attachment; the build swaps the asset URLs below for data: URIs.
+$assets-path: 'vendor-font:';
+$increase-font-size-on-larger-screens: false;
+
+@import 'scss/vanilla';
+
+@include vf-base;
+@include vf-p-buttons;
+@include vf-p-chip;
+@include vf-p-tabs;
+@include vf-p-card;
+
+// Vanilla switches theme by class.  The page has always followed the system
+// setting, with the Theme button overriding it through data-theme, so the
+// same mixins are hung off those selectors instead.
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    @include vf-theme-dark;
+  }
+}
+:root[data-theme='dark'] {
+  @include vf-theme-dark;
+}
+:root[data-theme='light'] {
+  @include vf-theme-light;
+}

@@ -1,0 +1,46 @@
+#!/bin/sh
+# Copyright (C) 2026 Canonical Ltd.
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Recompile vendor/vanilla.css from Vanilla's SCSS.
+#
+#   ./vendor/update 4.61.0
+#
+# The compiled CSS is checked in so that a build needs neither sass nor the
+# network; this is only for moving to another Vanilla release, or changing
+# which patterns vanilla.scss pulls in.  Needs curl and Dart Sass (`sass` on
+# PATH, from https://github.com/sass/dart-sass/releases -- the npm and libsass
+# ones are too old for Vanilla 4).
+#
+# Only the upright Ubuntu face and Ubuntu Mono are vendored, in vendor/fonts.
+# The page sets nothing in italic, so the italic face's @font-face is dropped
+# here rather than carried as 75 KiB nobody draws.  A new Vanilla that renames
+# its font files will leave a vendor-font: URL the build cannot resolve, and
+# the build says so.
+set -eu
+
+version=${1-}
+if [ -z "$version" ]; then
+    echo "usage: ${0##*/} VANILLA-VERSION" >&2
+    exit 2
+fi
+here=$(cd "$(dirname "$0")" && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+curl -fsSL "https://registry.npmjs.org/vanilla-framework/-/vanilla-framework-$version.tgz" \
+    | tar xz -C "$tmp"
+sass --no-source-map --style=compressed --quiet-deps \
+    --silence-deprecation=import,global-builtin,color-functions \
+    -I "$tmp/package" "$here/vanilla.scss" "$tmp/vanilla.css"
+python3 - "$tmp/vanilla.css" "$here/vanilla.css" "$version" <<'EOF'
+import re, sys
+src, dst, version = sys.argv[1:]
+css = open(src).read()
+css = re.sub(r'@font-face\{[^}]*Ubuntu-Italic[^}]*\}', '', css)
+with open(dst, "w") as f:
+    f.write("/* vanilla-framework %s, LGPL-3.0; see vendor/LICENSE.vanilla */\n"
+            % version)
+    f.write(css + "\n")
+EOF
+cp "$tmp/package/LICENSE" "$here/LICENSE.vanilla"

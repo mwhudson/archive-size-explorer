@@ -22,7 +22,7 @@ const IDS = ["filterbtn", "filters", "footer", "generated", "resetbtn",
 /** The tab row as the template declares it: view, label and aria-selected. */
 function tabsFrom(html) {
   const out = [];
-  const re = /<button class="tab"[^>]*data-view="([^"]+)"[^>]*aria-selected="([^"]+)"[^>]*>([^<]*)</g;
+  const re = /<button class="tab(?: [^"]*)?"[^>]*data-view="([^"]+)"[^>]*aria-selected="([^"]+)"[^>]*>([^<]*)</g;
   let m;
   while ((m = re.exec(html))) {
     out.push({view: m[1], selected: m[2], label: m[3]});

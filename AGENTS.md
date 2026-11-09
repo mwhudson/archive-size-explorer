@@ -162,6 +162,27 @@ Two ways to make a working build look broken:
 * **`grep` in the pipe block-buffers the progress log**, so a build that is
   working fine appears to have stalled. Use `grep --line-buffered`.
 
+## Vanilla and the vendored files
+
+The page's chrome is [Vanilla](https://vanillaframework.io/), compiled from
+the subset `vendor/vanilla.scss` names into `vendor/vanilla.css`, which the
+build inlines at `/*VANILLA*/` in `template.html`, fonts and all. Do not edit
+`vanilla.css` by hand; change the `.scss` and rerun `vendor/update`, which
+needs Dart Sass. The build itself needs neither.
+
+* **Vanilla's base layer styles bare elements.** Every `<button>` gets a
+  paragraph's bottom margin, every `table` a fixed layout with cells clipped
+  by an ellipsis, every `p` and heading a baseline-grid padding. The page's
+  own stylesheet undoes the ones that matter; a new element type will need the
+  same, so look at it in a browser.
+* **Theme is not Vanilla's `is-dark` class.** The page follows the system
+  setting and the Theme button overrides it through `data-theme`, so
+  `vanilla.scss` hangs Vanilla's theme mixins off those selectors. The button
+  reads `--is-dark` to know which way to flip.
+* **The tab buttons carry two classes**, `tab` for the page and the tests,
+  `p-tabs__link` for the look. `tests/page.js` parses the tab row out of the
+  markup and allows for the second.
+
 ## House style
 
 * Prose wraps at 79 columns, in the README and in docstrings. **Rewrap only
@@ -192,10 +213,14 @@ Two ways to make a working build look broken:
 
 ## Known rough edges
 
-* The palette's closest pair is `--s2` against `--s8`, at ΔE2000 13.3 in light
-  mode and 14.1 in dark — comfortably separated for normal vision. Separation
-  under simulated colour-vision deficiency has not been measured, so that is
-  the thing to check before adding or changing a hue.
+* The palette leads with Ubuntu orange, Vanilla's link blue and its positive
+  green, and each mode's eight are their own steps. In OKLab ΔE×100, adjacent
+  slots clear 20 under protan and deutan simulation in light mode and 17 in
+  dark. Across all pairs the weak spot is orange against green (light) and
+  lime (dark) under protan/deutan, at 1.5–2.2: kept because the brand hues
+  were the point, and leaned on the dash and the end labels instead. Normal
+  vision clears 21 over all pairs in light, 12 in dark (lime against green).
+  Check both modes, adjacent and all pairs, before changing a hue.
 * `report` and the page total over different sets of series, which is a
   frequent source of confusion rather than a bug; the README works the
   reconciliation through.

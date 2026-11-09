@@ -7,176 +7,174 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Size of the Ubuntu archive</title>
 <style>
+/*VANILLA*/
+</style>
+<style>
+/* Vanilla supplies the type, the theme colours and the button, chip, tab and
+   card patterns; what follows maps the page's own tokens onto its theme and
+   lays the page out.  Neutrals all come from Vanilla, so they follow its
+   light and dark themes without being restated here.  The series hues do
+   not: each mode's are their own steps, validated against that mode's
+   surface (see AGENTS.md), so they are set per theme below. */
 :root {
   color-scheme: light;
-  --page:           #f9f9f7;
-  --surface:        #fcfcfb;
-  --text-primary:   #0b0b0b;
-  --text-secondary: #52514e;
-  --muted:          #898781;
-  --grid:           #e1e0d9;
-  --axis:           #c3c2b7;
-  --border:         rgba(11,11,11,0.10);
-  --chip:           #ffffff;
-  --chip-on:        #0b0b0b;
-  --chip-on-text:   #fcfcfb;
-  --neutral-fill:   #e6e5df;
-  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
-  --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948;
+  --page:           var(--vf-color-background-default);
+  --surface:        var(--vf-color-background-default);
+  --text-primary:   var(--vf-color-text-default);
+  --text-secondary: var(--vf-color-text-inactive);
+  --muted:          var(--vf-color-text-muted);
+  --grid:           var(--vf-color-border-low-contrast);
+  --axis:           var(--vf-color-border-default);
+  --border:         var(--vf-color-border-default);
+  --neutral-fill:   rgba(0,0,0,0.12);
+  --accent:         #e95420;
+  /* Ubuntu orange, Vanilla's link blue and positive green lead, so the series
+     most often on screen wear the brand. */
+  --s1: #e95420; --s2: #0066cc; --s3: #0e8420; --s4: #ef79d5;
+  --s5: #a2399c; --s6: #aab51b; --s7: #22b4d1; --s8: #853900;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --page:           #0d0d0d;
-    --surface:        #1a1a19;
-    --text-primary:   #ffffff;
-    --text-secondary: #c3c2b7;
-    --muted:          #898781;
-    --grid:           #2c2c2a;
-    --axis:           #383835;
-    --border:         rgba(255,255,255,0.10);
-    --chip:           #232322;
-    --chip-on:        #fcfcfb;
-    --chip-on-text:   #0b0b0b;
-    --neutral-fill:   #34343180;
-    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
-    --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+    --is-dark: 1;
+    --neutral-fill: rgba(255,255,255,0.16);
+    --s1: #e95420; --s2: #287ee7; --s3: #269230; --s4: #d561bd;
+    --s5: #952b8f; --s6: #939d12; --s7: #02a0bb; --s8: #a25325;
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --page:           #0d0d0d;
-  --surface:        #1a1a19;
-  --text-primary:   #ffffff;
-  --text-secondary: #c3c2b7;
-  --muted:          #898781;
-  --grid:           #2c2c2a;
-  --axis:           #383835;
-  --border:         rgba(255,255,255,0.10);
-  --chip:           #232322;
-  --chip-on:        #fcfcfb;
-  --chip-on-text:   #0b0b0b;
-  --neutral-fill:   #34343180;
-  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
-  --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+  --is-dark: 1;
+  --neutral-fill: rgba(255,255,255,0.16);
+  --s1: #e95420; --s2: #287ee7; --s3: #269230; --s4: #d561bd;
+  --s5: #952b8f; --s6: #939d12; --s7: #02a0bb; --s8: #a25325;
 }
 
-* { box-sizing: border-box; }
 body {
   margin: 0;
   background: var(--page);
   color: var(--text-primary);
-  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px; line-height: 1.5;
 }
-.wrap { max-width: 1180px; margin: 0 auto; padding: 28px 20px 64px; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 20px 64px; }
+/* The orange rule is the one piece of brand chrome the page carries: the
+   same strip that heads ubuntu.com and vanillaframework.io. */
+.wrap::before {
+  content: ""; display: block; height: 4px; background: var(--accent);
+  margin: 0 -20px 24px;
+}
 header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
-h1 { font-size: 22px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+h1 {
+  font-size: 32px; line-height: 40px; margin: 0; padding: 0;
+  font-weight: 180; max-width: none;
+}
 .sub { color: var(--text-secondary); font-size: 13px; }
 .spacer { flex: 1; }
-button.plain {
-  font: inherit; background: var(--chip); color: var(--text-secondary);
-  border: 1px solid var(--border); border-radius: 7px; padding: 4px 10px;
-  cursor: pointer;
-}
-button.plain:hover { color: var(--text-primary); }
+/* Vanilla margins every button as if it ended a paragraph; here they sit in
+   rows that space themselves with gap. */
+header .p-button, .card h2 .p-button { margin: 0; }
+.frow .summary { margin: 0; font-size: 13px; text-align: left; white-space: normal; }
 
-.tiles { display: flex; gap: 12px; flex-wrap: wrap; margin: 22px 0 8px; }
+.tiles { display: flex; gap: 0; flex-wrap: wrap; margin: 24px 0 8px; }
+/* Vanilla's data-spotlight look: figures set light and large, separated by
+   a rule rather than boxed. */
 .tile {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 12px; padding: 14px 18px; min-width: 190px; flex: 1;
+  border-top: 1px solid var(--border); padding: 8px 24px 12px 0;
+  min-width: 190px; flex: 1;
 }
-.tile .label { color: var(--text-secondary); font-size: 12px; letter-spacing: 0.02em; }
-.tile .value { font-size: 28px; font-weight: 620; margin-top: 2px; letter-spacing: -0.02em; }
-.tile.primary .value { font-size: 34px; }
+.tile.primary { border-top: 3px solid var(--text-primary); padding-top: 6px; }
+.tile .label {
+  color: var(--text-secondary); font-size: 12px; letter-spacing: 0.05em;
+  font-weight: 550;
+}
+.tile .value { font-size: 32px; line-height: 40px; font-weight: 180; margin-top: 4px; }
+.tile.primary .value { font-size: 42px; line-height: 48px; font-weight: 180; }
 .tile .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
 
 .filters {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 12px; padding: 4px 16px 14px; margin: 16px 0 20px;
+  background: var(--vf-color-background-alt); border: 0;
+  padding: 4px 16px 14px; margin: 16px 0 24px;
 }
 .frow { display: flex; gap: 10px; align-items: flex-start; padding-top: 10px; flex-wrap: wrap; }
 .frow > .flabel {
-  color: var(--text-secondary); font-size: 12px; width: 88px;
-  flex: none; padding-top: 5px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--text-secondary); font-size: 12px; width: 88px; font-weight: 550;
+  flex: none; padding-top: 3px; text-transform: uppercase; letter-spacing: 0.05em;
 }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
-.chip {
-  font: inherit; font-size: 12.5px; background: var(--chip);
-  color: var(--text-secondary); border: 1px solid var(--border);
-  border-radius: 999px; padding: 3px 11px; cursor: pointer; white-space: nowrap;
-  display: inline-flex; align-items: center; gap: 6px;
+.chip.p-chip {
+  margin: 0; font-size: 13px; line-height: 22px;
+  align-items: center; gap: 6px;
 }
-.chip:hover { color: var(--text-primary); }
-.chip[aria-pressed="true"] {
-  background: var(--chip-on); color: var(--chip-on-text); border-color: var(--chip-on);
-}
-.chip .swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
-.chip .allnone { font-size: 11px; }
+.chip .swatch { width: 8px; height: 8px; flex: none; }
+.chip.allnone { font-size: 12px; color: var(--text-secondary); }
 
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
-.tab {
-  font: inherit; background: none; border: none; border-bottom: 2px solid transparent;
-  color: var(--text-secondary); padding: 8px 14px; cursor: pointer; margin-bottom: -1px;
-}
-.tab[aria-selected="true"] { color: var(--text-primary); border-bottom-color: var(--text-primary); font-weight: 560; }
+.tabs.p-tabs__list { margin-bottom: 24px; }
+.tab.p-tabs__link { margin: 0; font-size: 15px; }
 
-.card {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 12px; padding: 18px 20px 14px; margin-bottom: 18px;
-}
+.card.p-card { padding: 18px 20px 14px; margin-bottom: 24px; border-width: 1px; }
 .card h2 {
-  font-size: 14px; font-weight: 600; margin: 0 0 2px;
+  font-size: 16px; line-height: 24px; font-weight: 550; margin: 0 0 2px;
+  padding: 0; max-width: none;
   display: flex; align-items: baseline; justify-content: space-between;
   gap: 10px;
 }
-button.plain.zoom { font-size: 11px; padding: 2px 8px; flex: none; }
-button.plain.summary { font-size: 12.5px; text-align: left; }
-.card .cardsub { color: var(--text-secondary); font-size: 12.5px; margin-bottom: 12px; }
+.card h2 .p-button { flex: none; }
+.card .cardsub { color: var(--text-secondary); font-size: 13px; margin-bottom: 12px; }
 .chartbox { width: 100%; overflow-x: auto; }
 svg { display: block; }
-svg text { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--muted); }
+svg text { font: 11px "Ubuntu variable", "Ubuntu", system-ui, sans-serif; fill: var(--muted); }
 svg .axislabel { fill: var(--text-secondary); }
-svg .endlabel { font-size: 11px; font-weight: 560; }
+svg .endlabel { font-size: 11px; font-weight: 550; }
 
 .legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 10px 0 0; }
 .legend .item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
-.legend .key { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.legend .key { width: 10px; height: 10px; flex: none; }
 /* Used when a legend has dashed entries: a line reads as a line. */
-.legend .key.line { width: 18px; height: 3px; border-radius: 2px; }
+.legend .key.line { width: 18px; height: 3px; }
 
-table { border-collapse: collapse; width: 100%; font-size: 13px; }
-th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--grid); }
+/* Vanilla fixes the layout and clips cells with an ellipsis, which suits
+   prose tables; these are columns of figures that must never be cut. */
+table { table-layout: auto; margin-bottom: 0; font-size: 13px; }
+th, td {
+  text-align: right; padding: 5px 10px; overflow: visible;
+  border-bottom: 1px solid var(--grid);
+}
 th:first-child, td:first-child { text-align: left; }
-th { color: var(--text-secondary); font-weight: 560; font-size: 12px; }
+thead th {
+  color: var(--text-secondary); font-weight: 550; font-size: 12px;
+  letter-spacing: 0.05em; padding: 6px 10px;
+}
 td.num { font-variant-numeric: tabular-nums; }
-tr.total td { font-weight: 620; border-top: 1px solid var(--axis); }
+tr.total td { font-weight: 550; border-top: 1px solid var(--axis); }
 .tablewrap { overflow-x: auto; }
 
 .tooltip {
   position: fixed; pointer-events: none; z-index: 20; opacity: 0;
   background: var(--surface); border: 1px solid var(--border);
-  border-radius: 8px; padding: 8px 10px; font-size: 12px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.14); transition: opacity .08s;
+  padding: 8px 10px; font-size: 12px;
+  box-shadow: 0 1px 5px 1px rgba(0,0,0,0.2); transition: opacity .08s;
   max-width: 280px;
 }
-.tooltip .tt-title { font-weight: 600; margin-bottom: 4px; }
+.tooltip .tt-title { font-weight: 550; margin-bottom: 4px; }
 .tooltip .tt-row { display: flex; gap: 10px; justify-content: space-between; }
 .tooltip .tt-row span:last-child { font-variant-numeric: tabular-nums; }
 
 .slider-row { display: flex; align-items: center; gap: 12px; }
-.slider-row input[type=range] { flex: 1; accent-color: var(--s1); }
+.slider-row input[type=range] { flex: 1; margin: 0; }
 .slider-row .stamp { font-variant-numeric: tabular-nums; color: var(--text-secondary); min-width: 74px; }
 .empty { color: var(--muted); padding: 28px 0; text-align: center; }
-footer { color: var(--muted); font-size: 12px; margin-top: 28px; line-height: 1.7; }
-footer a { color: var(--text-secondary); text-decoration: underline; }
-footer a:hover { color: var(--text-primary); }
-footer details { margin-bottom: 10px; }
+footer {
+  color: var(--muted); font-size: 13px; margin-top: 32px; line-height: 1.7;
+  border-top: 1px solid var(--border); padding-top: 16px;
+}
+footer details { margin-bottom: 10px; overflow: visible; }
 footer summary {
   color: var(--text-secondary); cursor: pointer; width: fit-content;
+  padding: 0; margin: 0;
 }
 footer summary:hover { color: var(--text-primary); }
-footer details p { margin: 10px 0 0; max-width: 78ch; }
-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+footer details p { margin: 10px 0 0; padding: 0; max-width: 78ch; font-size: 13px; line-height: 1.7; }
+code { font-size: 12px; padding: 0 3px; }
 </style>
 </head>
 <body>
@@ -185,10 +183,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   <h1>Size of the Ubuntu archive</h1>
   <div class="sub" id="generated"></div>
   <div class="spacer"></div>
-  <button class="plain" id="filterbtn" type="button" aria-expanded="true"
+  <button class="p-button is-dense" id="filterbtn" type="button" aria-expanded="true"
           aria-controls="filters">Hide filters</button>
-  <button class="plain" id="resetbtn" type="button">Reset</button>
-  <button class="plain" id="themebtn" type="button">Theme</button>
+  <button class="p-button is-dense" id="resetbtn" type="button">Reset</button>
+  <button class="p-button is-dense" id="themebtn" type="button">Theme</button>
 </header>
 
 <div class="tiles">
@@ -219,12 +217,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 
 <div class="filters" id="filters"></div>
 
-<div class="tabs" role="tablist">
-  <button class="tab" role="tab" data-view="archive" aria-selected="true">Archive size</button>
-  <button class="tab" role="tab" data-view="time" aria-selected="false">Kernels over time</button>
-  <button class="tab" role="tab" data-view="breakdown" aria-selected="false">Kernel breakdown</button>
-  <button class="tab" role="tab" data-view="table" aria-selected="false">Tables</button>
-  <button class="tab" role="tab" data-view="lists" aria-selected="false">Package lists</button>
+<div class="tabs p-tabs__list" role="tablist">
+  <button class="tab p-tabs__link" role="tab" data-view="archive" aria-selected="true">Archive size</button>
+  <button class="tab p-tabs__link" role="tab" data-view="time" aria-selected="false">Kernels over time</button>
+  <button class="tab p-tabs__link" role="tab" data-view="breakdown" aria-selected="false">Kernel breakdown</button>
+  <button class="tab p-tabs__link" role="tab" data-view="table" aria-selected="false">Tables</button>
+  <button class="tab p-tabs__link" role="tab" data-view="lists" aria-selected="false">Package lists</button>
 </div>
 
 <div id="views"></div>
@@ -320,7 +318,7 @@ try {
   DATA = await loadData();
 } catch (err) {
   document.getElementById("views").innerHTML =
-    '<div class="card"><h2>Could not read the dataset</h2><p>' +
+    '<div class="card p-card"><h2>Could not read the dataset</h2><p>' +
     String(err && err.message ? err.message : err) + "</p></div>";
   return;
 }
@@ -1206,7 +1204,7 @@ function chipRow(label, values, selected, onToggle, colourFor, extras) {
   chips.className = "chips";
   values.forEach((v, i) => {
     const b = document.createElement("button");
-    b.className = "chip";
+    b.className = "chip p-chip is-dense";
     b.type = "button";
     b.setAttribute("aria-pressed", selected.has(i) ? "true" : "false");
     if (colourFor) {
@@ -1220,7 +1218,7 @@ function chipRow(label, values, selected, onToggle, colourFor, extras) {
     chips.appendChild(b);
   });
   const all = document.createElement("button");
-  all.className = "chip allnone";
+  all.className = "chip p-chip is-dense allnone";
   all.type = "button";
   // "select all"/"select none" rather than "all"/"none": one of the values in
   // the architecture row is itself called "all".
@@ -1233,7 +1231,7 @@ function chipRow(label, values, selected, onToggle, colourFor, extras) {
   chips.appendChild(all);
   for (const extra of extras || []) {
     const b = document.createElement("button");
-    b.className = "chip allnone";
+    b.className = "chip p-chip is-dense allnone";
     b.type = "button";
     b.textContent = extra[0];
     b.title = extra[1];
@@ -1260,7 +1258,7 @@ function pickRow(label, choices, field) {
   chips.className = "chips";
   for (const choice of choices) {
     const b = document.createElement("button");
-    b.className = "chip";
+    b.className = "chip p-chip is-dense";
     b.type = "button";
     b.textContent = choice[1];
     if (choice[2]) b.title = choice[2];
@@ -1312,7 +1310,7 @@ function buildFilters() {
     name.textContent = "Filters";
     row.appendChild(name);
     const b = document.createElement("button");
-    b.className = "plain summary";
+    b.className = "p-button--base is-dense summary";
     b.type = "button";
     b.textContent = filterSummary();
     b.title = "bring the filters back";
@@ -1957,7 +1955,7 @@ const ALWAYS = "always";
 
 function card(host, title, sub, key) {
   const c = document.createElement("div");
-  c.className = "card";
+  c.className = "card p-card";
   const h = document.createElement("h2");
   const name = document.createElement("span");
   name.textContent = title;
@@ -1966,7 +1964,7 @@ function card(host, title, sub, key) {
   // attached, so no view needs to know this is happening.
   if (key && key !== ALWAYS) {
     const z = document.createElement("button");
-    z.className = "plain zoom";
+    z.className = "p-button is-small is-dense";
     z.type = "button";
     z.textContent = state.zoom === key ? "show all" : "focus";
     z.title = state.zoom === key
@@ -2185,7 +2183,7 @@ document.getElementById("resetbtn").addEventListener("click", () => {
 
 document.getElementById("themebtn").addEventListener("click", () => {
   const root = document.documentElement;
-  const dark = getComputedStyle(root).getPropertyValue("--page").trim() === "#0d0d0d";
+  const dark = getComputedStyle(root).getPropertyValue("--is-dark").trim() === "1";
   root.setAttribute("data-theme", dark ? "light" : "dark");
   render();
 });

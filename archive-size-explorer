@@ -26,6 +26,7 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 
 import requests
 
@@ -655,13 +656,35 @@ def encode_payload(data):
     return header, len(blob), len(packed)
 
 
+def vanilla_css(here):
+    """vendor/vanilla.css with its fonts inlined as data: URIs.
+
+    The page has to work from file:// and as a mail attachment, so nothing in
+    it may be fetched -- including the Ubuntu font Vanilla would otherwise pull
+    from assets.ubuntu.com.  vendor/vanilla.scss points the font URLs at
+    `vendor-font:NAME`, NAME being the asset's own percent-encoded filename,
+    and vendor/fonts holds each under its decoded name.
+    """
+    vendor = os.path.join(here, "vendor")
+    with open(os.path.join(vendor, "vanilla.css")) as f:
+        css = f.read()
+
+    def font(m):
+        name = urllib.parse.unquote(m.group(1))
+        with open(os.path.join(vendor, "fonts", name), "rb") as f:
+            return "url(data:font/woff2;base64,%s)" % (
+                base64.b64encode(f.read()).decode("ascii"))
+    return re.sub(r'url\("vendor-font:([^"]+)"\)', font, css)
+
+
 def write_html(path, data):
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "template.html")) as f:
         template = f.read()
     header, raw, packed = encode_payload(data)
     payload = json.dumps(header, separators=(",", ":"))
-    html = template.replace("/*DATA*/null/*DATA*/", payload)
+    html = template.replace("/*VANILLA*/", vanilla_css(here))
+    html = html.replace("/*DATA*/null/*DATA*/", payload)
     with open(path, "w") as f:
         f.write(html)
     log("wrote %s (%.1f MiB; %.1f MiB packed, %.1f MiB gzipped)"
