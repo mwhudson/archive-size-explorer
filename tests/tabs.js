@@ -63,6 +63,32 @@ suite(async ({page, check}) => {
   check("and come back with it", flavours(), every);
   T.state.zoom = null;
 
+  // On a tab with the snapshot slider the line charts' dots mark the chosen
+  // snapshot, and follow a drag without a re-render.  A drag and a fresh
+  // render at the same snapshot must put them in the same place.
+  const dots = () => T.S.document.getElementById("views")
+    .querySelectorAll("circle").map(c => c.getAttribute("cx")).join(" ");
+  T.resetDefaults();
+  T.state.view = "archive";
+  T.render();
+  const atEnd = dots();
+  check("dots drawn", atEnd.length > 0, true);
+  const range = T.S.document.getElementById("views").querySelector("input");
+  range.value = 0;
+  range.dispatch("input");
+  const dragged = dots();
+  check("dots follow the slider", dragged !== atEnd, true);
+  T.render();
+  check("and land where a render puts them", dots(), dragged);
+  // A tab without the slider has nothing to follow.
+  T.state.view = "time";
+  T.render();
+  const timeAt0 = dots();
+  T.state.snap = T.DEFAULTS.snap;
+  T.render();
+  check("no slider, dots stay at the end", timeAt0, dots());
+  T.resetDefaults();
+
   // A link into a tab still works, and an unknown one falls back.
   const T2 = await load(page, "#v=breakdown");
   check("link into a tab", T2.state.view, "breakdown");

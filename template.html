@@ -576,6 +576,14 @@ const state = {
 
 let zoomFound = false;
 
+// Line charts on a tab with the snapshot chooser mark the chosen snapshot
+// rather than the last one, and follow the slider while it is dragged.  The
+// drag cannot re-render -- that would replace the range under the pointer --
+// so each chart leaves a function here that moves its own marks, and the
+// chooser calls them.  render() starts the list afresh, and nothing sets
+// snapFollow but the chooser, so tabs without one keep their marks at the end.
+let snapMarks = [], snapFollow = false;
+
 function setNames(sel, names) {
   return [...sel].sort((a, b) => a - b).map(i => names[i]).join(",");
 }
@@ -1113,6 +1121,7 @@ function lineChart(host, opts) {
   el("line", { x1: pad.left, x2: pad.left + plotW, y1: Y(base), y2: Y(base),
                stroke: "var(--axis)", "stroke-width": 1 }, svg);
 
+  const dots = [];
   for (const s of series) {
     let d = "", pen = false;
     s.points.forEach((v, i) => {
@@ -1128,13 +1137,40 @@ function lineChart(host, opts) {
     let last = -1;
     s.points.forEach((v, i) => { if (v !== null) last = i; });
     if (last >= 0) {
-      el("circle", { cx: X(last), cy: Y(s.points[last]), r: 3.5, fill: s.colour,
-                     stroke: "var(--surface)", "stroke-width": 2 }, svg);
       const t = el("text", { x: X(last) + 9, y: Y(s.points[last]) + 4,
                              class: "endlabel", fill: s.colour }, svg);
       t.textContent = s.name;
+      dots.push({ points: s.points, last, colour: s.colour });
     }
   }
+  // The rule goes under the dots, which are drawn after every line so that no
+  // line crosses another series' mark.
+  const rule = el("line", { y1: pad.top, y2: pad.top + plotH, stroke: "var(--axis)",
+                            "stroke-width": 1, "stroke-dasharray": "3 3",
+                            opacity: 0 }, svg);
+  for (const d of dots) {
+    d.el = el("circle", { r: 3.5, fill: d.colour,
+                          stroke: "var(--surface)", "stroke-width": 2 }, svg);
+  }
+  const mark = i => {
+    // At the last snapshot the rule would only trace the plot's right edge.
+    const atEnd = i >= xs.length - 1;
+    rule.setAttribute("x1", X(i));
+    rule.setAttribute("x2", X(i));
+    rule.setAttribute("opacity", atEnd ? 0 : 1);
+    for (const d of dots) {
+      // A series that has stopped keeps its dot where it stopped, as it
+      // always has; one that has not started yet has nothing to mark.
+      const j = i > d.last ? d.last : i;
+      const v = d.points[j];
+      d.el.setAttribute("visibility", v === null ? "hidden" : "visible");
+      if (v === null) continue;
+      d.el.setAttribute("cx", X(j));
+      d.el.setAttribute("cy", Y(v));
+    }
+  };
+  mark(snapFollow ? state.snap : xs.length - 1);
+  snapMarks.push(mark);
 
   // crosshair + tooltip
   const hair = el("line", { y1: pad.top, y2: pad.top + plotH, stroke: "var(--axis)",
@@ -1584,9 +1620,12 @@ function snapshotChooser(host, redraw) {
 
   const body = document.createElement("div");
   host.appendChild(body);
+  snapFollow = true;
+  for (const m of snapMarks) m(state.snap);
   range.addEventListener("input", () => {
     state.snap = +range.value;
     fill();
+    for (const m of snapMarks) m(state.snap);
     label.textContent = stamp(D.snapshots[state.snap]);
     updateTiles();
     body.innerHTML = "";
@@ -2130,6 +2169,8 @@ function render() {
   const host = document.getElementById("views");
   host.innerHTML = "";
   zoomFound = false;
+  snapMarks = [];
+  snapFollow = false;
   if (!state.series.size || !state.arch.size || !state.pocket.size || !state.comp.size) {
     host.innerHTML = '<div class="card"><div class="empty">' +
       "Select at least one of each filter.</div></div>";
