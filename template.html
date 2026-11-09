@@ -161,6 +161,18 @@ tr.total td { font-weight: 550; border-top: 1px solid var(--axis); }
 
 .slider-row { display: flex; align-items: center; gap: 12px; }
 .slider-row input[type=range] { flex: 1; margin: 0; }
+/* Vanilla leaves the track to its slider script, which the page does not
+   carry, so in Chromium it is not drawn at all.  The input paints its own:
+   the high-contrast border colour, filled up to the thumb in link blue,
+   with the fill's width set from script.  Firefox's own track and progress
+   are cleared so that both engines draw this one. */
+.slider-row input[type=range] {
+  background: linear-gradient(var(--vf-color-link-default),
+                              var(--vf-color-link-default)) 0 / 0 100% no-repeat,
+              var(--vf-color-border-high-contrast);
+}
+.slider-row input[type=range]::-moz-range-track,
+.slider-row input[type=range]::-moz-range-progress { background: transparent; }
 .slider-row .stamp { font-variant-numeric: tabular-nums; color: var(--text-secondary); min-width: 74px; }
 .empty { color: var(--muted); padding: 28px 0; text-align: center; }
 footer {
@@ -1558,6 +1570,11 @@ function snapshotChooser(host, redraw) {
   range.min = 0;
   range.max = D.snapshots.length - 1;
   range.value = state.snap;
+  const fill = () => {
+    range.style.backgroundSize =
+      (range.max > 0 ? 100 * range.value / range.max : 0) + "% 100%, auto";
+  };
+  fill();
   const label = document.createElement("div");
   label.className = "stamp";
   label.textContent = stamp(D.snapshots[state.snap]);
@@ -1569,6 +1586,7 @@ function snapshotChooser(host, redraw) {
   host.appendChild(body);
   range.addEventListener("input", () => {
     state.snap = +range.value;
+    fill();
     label.textContent = stamp(D.snapshots[state.snap]);
     updateTiles();
     body.innerHTML = "";
