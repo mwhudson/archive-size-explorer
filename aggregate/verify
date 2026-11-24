@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+# Copyright (C) 2026 Canonical Ltd.
+# SPDX-License-Identifier: GPL-3.0-only
+"""Check archive-aggregate against the aggregates Python has already cached.
+
+  aggregate/verify --from 2023-03            # every monthly snapshot
+  aggregate/verify --every week --from 2026-06
+
+For each snapshot it plans the job exactly as `build` would -- same series,
+same live pin, same cache key -- runs the Rust aggregator over it, and
+compares the text it prints with the cached entry byte for byte.  The cache
+is only read, never written, so a mismatch cannot leak into a page.
+
+A snapshot with no cached entry under the current key is skipped rather than
+counted as a pass: there is nothing to compare against.
+"""
+
+import argparse
+import difflib
+import gzip
+import os
+import subprocess
+import sys
+import time
+from importlib.machinery import SourceFileLoader
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.join(HERE, "..")
+sys.path.insert(0, ROOT)
+
+from archive_sizes import (  # noqa: E402
+    CANDIDATE_SERIES, LIVE_SERIES, POCKETS, series_bit, snapshots,
+)
+
+cli = SourceFileLoader(
+    "archive_size_explorer",
+    os.path.join(ROOT, "archive-size-explorer")).load_module()
+
+BINARY = os.path.join(HERE, "target", "release", "archive-aggregate")
+
+
+def job_for(builder, snap, series_list, live_names, token):
+    """The job text for one snapshot, or None if the cache cannot supply it.
+
+    Index lines go in load_rows's order -- component, then pocket, then plan
+    order -- because the first sighting of a pool file decides its columns.
+    """
+    lines = []
+    pocket_bit = {p: 1 << i for i, p in enumerate(POCKETS)}
+    for series in series_list:
+        src = token if series in live_names else snap
+        try:
+            plan = builder.plan(src, series)
+        except cli.SkipOffline:
+            return None
+        if plan is None:
+            continue
+        for ix in plan:
+            if not builder.cache.have_blob(ix.sha, ix.arch == "source"):
+                return None
+        lines.append("series\t%s\t%d" % (series, series_bit(series)))
+        for component in builder.components:
+            for pocket in builder.pockets:
+                for ix in plan:
+                    if ix.component == component and ix.pocket == pocket:
+                        lines.append("\t".join(map(str, [
+                            "ix", ix.component, ix.arch, ix.pocket,
+                            pocket_bit[pocket], ix.csize, ix.usize,
+                            builder.cache.blob_path(ix.sha)])))
+    return "\n".join(lines) + "\n"
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    cli.add_common(p)
+    cli.add_window(p)
+    args = p.parse_args()
+    args.offline = True
+    builder = cli.make_builder(args)
+
+    series_list = list(CANDIDATE_SERIES)
+    live_names = list(LIVE_SERIES)
+    token = builder.cache.get_live_pin()
+    if token is None:
+        live_names = []
+    series_list += live_names
+
+    passed = failed = skipped = 0
+    py_secs = rust_secs = 0.0
+    for snap in snapshots(args.from_, args.to, args.every):
+        key = cli.snapshot_key(builder, snap, series_list, live_names, token)
+        path = builder.cache.aggregate_path(snap, key) if key else None
+        job = job_for(builder, snap, series_list, live_names, token)
+        if path is None or not os.path.exists(path) or job is None:
+            print("%s  skipped (nothing cached to compare with)" % snap[:8])
+            skipped += 1
+            continue
+        with gzip.open(path, "rt") as f:
+            want = f.read()
+        started = time.time()
+        run = subprocess.run([BINARY], input=job, capture_output=True,
+                             text=True)
+        took = time.time() - started
+        if run.returncode != 0:
+            print("%s  FAILED: archive-aggregate exited %d\n%s"
+                  % (snap[:8], run.returncode, run.stderr))
+            failed += 1
+            continue
+        rust_secs += took
+        if run.stdout == want:
+            print("%s  ok   %5.2fs  %s" % (snap[:8], took,
+                                          run.stderr.strip().split(": ", 1)[-1]))
+            passed += 1
+        else:
+            print("%s  DIFFERS" % snap[:8])
+            diff = difflib.unified_diff(want.splitlines(), run.stdout.splitlines(),
+                                        "python", "rust", lineterm="", n=0)
+            for i, line in enumerate(diff):
+                if i == 40:
+                    print("    ...")
+                    break
+                print("    " + line)
+            failed += 1
+        sys.stdout.flush()
+    print("%d identical, %d different, %d skipped; rust %.1fs in all"
+          % (passed, failed, skipped, rust_secs))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

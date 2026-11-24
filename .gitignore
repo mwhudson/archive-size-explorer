@@ -4,3 +4,5 @@ __pycache__/
 # of history per rebuild for output the tool can regenerate in seconds.
 *.html
 !template.html
+# The Rust aggregator's build output.
+aggregate/target/

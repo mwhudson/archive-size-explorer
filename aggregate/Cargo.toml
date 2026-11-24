@@ -1,0 +1,18 @@
+[package]
+name = "archive-aggregate"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+[dependencies]
+# zlib-rs rather than the default miniz_oxide: inflating the blobs is a fifth
+# of the work, and zlib-rs is the faster of the two pure-Rust backends.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+rayon = "1"
+regex = "1"
+rustc-hash = "2"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
