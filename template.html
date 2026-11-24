@@ -174,6 +174,40 @@ tr.total td { font-weight: 550; border-top: 1px solid var(--axis); }
 .slider-row input[type=range]::-moz-range-track,
 .slider-row input[type=range]::-moz-range-progress { background: transparent; }
 .slider-row .stamp { font-variant-numeric: tabular-nums; color: var(--text-secondary); min-width: 74px; }
+
+/* The time window: two ranges stacked on one track, which is the only way to
+   get two thumbs out of native inputs.  Neither input draws anything but its
+   thumb, and only the thumbs take the pointer, so a press lands on whichever
+   thumb is under it; the shared track is painted on the box behind them,
+   filled between the thumbs.  The 8px insets are half Vanilla's 1rem thumb,
+   because a thumb's centre travels from 8px to the width less 8px rather than
+   edge to edge. */
+.window-row { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 240px; }
+.window-row .stamp {
+  font-variant-numeric: tabular-nums; color: var(--text-secondary);
+  font-size: 13px; min-width: 74px;
+}
+.window-row .stamp:last-child { text-align: right; }
+.dual {
+  position: relative; flex: 1; height: 22px;
+  --lo: 0; --hi: 1;
+  background: linear-gradient(90deg,
+      transparent calc(8px + (100% - 16px) * var(--lo)),
+      var(--vf-color-link-default) calc(8px + (100% - 16px) * var(--lo))
+        calc(8px + (100% - 16px) * var(--hi)),
+      transparent calc(8px + (100% - 16px) * var(--hi))) center / 100% 3px no-repeat,
+    linear-gradient(var(--vf-color-border-high-contrast),
+                    var(--vf-color-border-high-contrast)) center / 100% 3px no-repeat;
+}
+.dual input[type=range] {
+  position: absolute; left: 0; top: 0; bottom: 0; margin: auto 0;
+  background: transparent; pointer-events: none;
+}
+.dual input[type=range]::-webkit-slider-thumb { pointer-events: auto; }
+.dual input[type=range]::-moz-range-thumb { pointer-events: auto; }
+.dual input[type=range]::-moz-range-track,
+.dual input[type=range]::-moz-range-progress { background: transparent; }
+.dual input.top { z-index: 1; }
 .empty { color: var(--muted); padding: 28px 0; text-align: center; }
 footer {
   color: var(--muted); font-size: 13px; margin-top: 32px; line-height: 1.7;
@@ -536,6 +570,9 @@ const DEFAULTS = {
   shown: "total",
   rateWindow: 3,
   snap: D.snapshots.length - 1,
+  // The time window, as the first and last snapshot drawn, both inclusive.
+  from: 0,
+  to: D.snapshots.length - 1,
   filters: true,
   view: "archive",
 };
@@ -557,6 +594,8 @@ const state = {
   rateWindow: DEFAULTS.rateWindow,
   view: DEFAULTS.view,
   snap: DEFAULTS.snap,
+  from: DEFAULTS.from,
+  to: DEFAULTS.to,
   zoom: null,
   filters: DEFAULTS.filters,
 };
@@ -583,6 +622,11 @@ let zoomFound = false;
 // chooser calls them.  render() starts the list afresh, and nothing sets
 // snapFollow but the chooser, so tabs without one keep their marks at the end.
 let snapMarks = [], snapFollow = false;
+
+// The same arrangement for the time window: a drag cannot re-render either,
+// so each line chart leaves a function that shades what the window being
+// dragged would leave out, and the window row calls them as it moves.
+let windowMarks = [];
 
 function setNames(sel, names) {
   return [...sel].sort((a, b) => a - b).map(i => names[i]).join(",");
@@ -620,6 +664,12 @@ function encodeState() {
   if (state.shown !== DEFAULTS.shown) set("d", state.shown);
   if (state.rateWindow !== DEFAULTS.rateWindow) set("w", state.rateWindow);
   if (state.snap !== DEFAULTS.snap) set("n", D.snapshots[state.snap]);
+  // Each end only when it has moved, so a window running to the newest
+  // snapshot still does after a rebuild has appended more.
+  if (state.from !== DEFAULTS.from || state.to !== DEFAULTS.to) {
+    set("t", (state.from !== DEFAULTS.from ? D.snapshots[state.from] : "") +
+             ".." + (state.to !== DEFAULTS.to ? D.snapshots[state.to] : ""));
+  }
   if (state.zoom) set("z", state.zoom);
   if (!state.filters) set("f", "0");
   return out.join("&");
@@ -659,9 +709,47 @@ function applyHash(hash) {
     const i = D.snapshots.indexOf(got.get("n"));
     if (i >= 0) state.snap = i;
   }
+  if (got.has("t")) {
+    const w = parseWindow(got.get("t"));
+    if (w) { state.from = w[0]; state.to = w[1]; }
+  }
+  clampSnap();
   if (got.has("z")) state.zoom = got.get("z");
   if (got.has("f")) state.filters = got.get("f") !== "0";
 }
+
+/** The two ends of a `t=` value as snapshot indices, or null for rubbish.
+ *
+ *  Unlike n=, an end need not name a snapshot this page has: it is taken as
+ *  a date, and the window is every snapshot inside it.  That lets a link
+ *  move between the monthly and the weekly page, whose stamps never match,
+ *  and lets a hand-written one say just 20250101.
+ */
+function parseWindow(text) {
+  const ends = text.split("..");
+  if (ends.length !== 2) return null;
+  const last = D.snapshots.length - 1;
+  const norm = s => (/^\d{8}$/.test(s) ? s + "T000000Z" : s);
+  const ok = s => s === "" || /^\d{8}T\d{6}Z$/.test(s);
+  const a = norm(ends[0]), b = norm(ends[1]);
+  if (!ok(a) || !ok(b)) return null;
+  // Stamps are fixed-width, so they compare as strings.
+  const from = a === "" ? 0 : D.snapshots.findIndex(s => s >= a);
+  let to = last;
+  if (b !== "") {
+    to = -1;
+    D.snapshots.forEach((s, i) => { if (s <= b) to = i; });
+  }
+  if (from < 0 || to < 0 || from > to || (from === to && last > 0)) return null;
+  return [from, to];
+}
+
+/** Keep the chosen snapshot inside the time window. */
+function clampSnap() {
+  state.snap = Math.min(Math.max(state.snap, state.from), state.to);
+}
+
+const inWindow = i => i >= state.from && i <= state.to;
 
 /** Reflect state in the address bar.
  *
@@ -696,6 +784,8 @@ function resetDefaults() {
   state.shown = DEFAULTS.shown;
   state.rateWindow = DEFAULTS.rateWindow;
   state.snap = DEFAULTS.snap;
+  state.from = DEFAULTS.from;
+  state.to = DEFAULTS.to;
 }
 
 /* -------------------------------------------------------------- formatting */
@@ -1057,7 +1147,13 @@ function lineChart(host, opts) {
   // one control reaches every line chart on the page.
   const rate = state.shown === "rate";
   const logY = state.shown === "log";
-  const series = rate
+  // The time window is applied here for the same reason, and after the rate
+  // is taken rather than before: a rate at the window's first snapshot still
+  // has the months behind it to measure across, so narrowing the window does
+  // not also cost its opening months.
+  const lo = state.from, hi = state.to;
+  const cut = a => a.slice(lo, hi + 1);
+  const series = (rate
     ? opts.series.map(s => ({ name: s.name, colour: s.colour, dash: s.dash,
                               points: rates(s.points, state.rateWindow) }))
     : logY
@@ -1066,7 +1162,9 @@ function lineChart(host, opts) {
     // invent a value and draw a line to it.
     ? opts.series.map(s => ({ name: s.name, colour: s.colour, dash: s.dash,
                               points: s.points.map(p => (p > 0 ? p : null)) }))
-    : opts.series;
+    : opts.series
+  ).map(s => ({ name: s.name, colour: s.colour, dash: s.dash,
+                points: cut(s.points) }));
   const fmt = rate ? (v => signed(v, opts.diffFmt || opts.fmt) + "/mo")
             : logY ? (opts.logFmt || opts.fmt) : opts.fmt;
 
@@ -1076,7 +1174,9 @@ function lineChart(host, opts) {
                             (rate ? ", rate of change" : "") +
                             (logY ? ", logarithmic scale" : "") });
 
-  const xs = opts.x;
+  // From here on an index is a position inside the window; opts.xTitle and
+  // the snapshot marks both speak in snapshot indices, so they are shifted.
+  const xs = cut(opts.x);
   const vals = series.flatMap(s => s.points.filter(p => p !== null));
   let yTicks, Y;
   if (logY) {
@@ -1152,7 +1252,8 @@ function lineChart(host, opts) {
     d.el = el("circle", { r: 3.5, fill: d.colour,
                           stroke: "var(--surface)", "stroke-width": 2 }, svg);
   }
-  const mark = i => {
+  const mark = snap => {
+    const i = Math.max(0, Math.min(xs.length - 1, snap - lo));
     // At the last snapshot the rule would only trace the plot's right edge.
     const atEnd = i >= xs.length - 1;
     rule.setAttribute("x1", X(i));
@@ -1169,8 +1270,45 @@ function lineChart(host, opts) {
       d.el.setAttribute("cy", Y(v));
     }
   };
-  mark(snapFollow ? state.snap : xs.length - 1);
+  mark(snapFollow ? state.snap : hi);
   snapMarks.push(mark);
+
+  // The time window being dragged: page colour laid over what it would cut,
+  // so the lines there fade, and a rule at each new end in the slider's own
+  // fill colour, tying the marks to the control making them.  Only an end
+  // that has moved inwards has anywhere to go -- one dragged outwards is off
+  // the chart, and the stamps beside the slider are all that can say where.
+  const pending = [];
+  for (let k = 0; k < 2; k++) {
+    pending.push({
+      shade: el("rect", { y: pad.top, height: plotH, fill: "var(--page)",
+                          opacity: 0.7, visibility: "hidden",
+                          class: "pending" }, svg),
+      edge: el("line", { y1: pad.top, y2: pad.top + plotH,
+                         stroke: "var(--vf-color-link-default)",
+                         "stroke-width": 1.5, visibility: "hidden",
+                         class: "pending" }, svg),
+    });
+  }
+  const showWindow = (a, b) => {
+    const ends = [
+      // [shown, shade from, shade to, rule at]
+      a > lo ? [pad.left, X(a - lo), X(a - lo)] : null,
+      b < hi ? [X(b - lo), pad.left + plotW, X(b - lo)] : null,
+    ];
+    ends.forEach((e, k) => {
+      const p = pending[k];
+      const vis = e ? "visible" : "hidden";
+      p.shade.setAttribute("visibility", vis);
+      p.edge.setAttribute("visibility", vis);
+      if (!e) return;
+      p.shade.setAttribute("x", e[0]);
+      p.shade.setAttribute("width", Math.max(0, e[1] - e[0]));
+      p.edge.setAttribute("x1", e[2]);
+      p.edge.setAttribute("x2", e[2]);
+    });
+  };
+  windowMarks.push(showWindow);
 
   // crosshair + tooltip
   const hair = el("line", { y1: pad.top, y2: pad.top + plotH, stroke: "var(--axis)",
@@ -1184,7 +1322,7 @@ function lineChart(host, opts) {
     hair.setAttribute("x1", X(i));
     hair.setAttribute("x2", X(i));
     hair.setAttribute("opacity", 1);
-    let html = '<div class="tt-title">' + opts.xTitle(i) + "</div>";
+    let html = '<div class="tt-title">' + opts.xTitle(i + lo) + "</div>";
     for (const s of series) {
       if (s.points[i] === null) continue;
       html += '<div class="tt-row"><span style="color:' + s.colour + '">●</span>' +
@@ -1318,6 +1456,130 @@ function pickRow(label, choices, field) {
   return row;
 }
 
+// Which end of the time window had the keyboard when it last committed.
+// Committing re-renders, which rebuilds the row, so without handing focus back
+// an arrow key would move the window one step and then do nothing.
+let windowFocus = null;
+
+/** The time window: two thumbs on one track.
+ *
+ *  The charts follow when a thumb is let go rather than while it moves.  A
+ *  drag cannot re-render, because render() rebuilds this row and would
+ *  replace the input under the pointer, and redrawing every chart per step
+ *  is too slow on the weekly page anyway.  In the meantime the stamps either
+ *  side say where the drag has got to, and the line charts shade what it
+ *  would leave out (windowMarks).
+ */
+function windowRow(host) {
+  const last = D.snapshots.length - 1;
+  if (last < 1) return;
+  const row = document.createElement("div");
+  row.className = "frow";
+  const lab = document.createElement("div");
+  lab.className = "flabel";
+  lab.textContent = "Time window";
+  row.appendChild(lab);
+  const box = document.createElement("div");
+  box.className = "window-row";
+  const left = document.createElement("div");
+  left.className = "stamp";
+  const dual = document.createElement("div");
+  dual.className = "dual";
+  const right = document.createElement("div");
+  right.className = "stamp";
+  const range = (value, name) => {
+    const r = document.createElement("input");
+    r.type = "range";
+    r.min = 0;
+    r.max = last;
+    r.value = value;
+    r.setAttribute("aria-label", name);
+    dual.appendChild(r);
+    return r;
+  };
+  const lo = range(state.from, "start of the time window");
+  const hi = range(state.to, "end of the time window");
+  hi.classList.add("top");
+
+  const paint = () => {
+    dual.style.setProperty("--lo", lo.value / last);
+    dual.style.setProperty("--hi", hi.value / last);
+    left.textContent = stamp(D.snapshots[+lo.value]);
+    right.textContent = stamp(D.snapshots[+hi.value]);
+    lo.setAttribute("aria-valuetext", left.textContent);
+    hi.setAttribute("aria-valuetext", right.textContent);
+  };
+  // Never fewer than two snapshots: a window of one is a single point, which
+  // is what the snapshot chooser is for, and no line chart can draw it.
+  // A drag shows on the charts as it goes, without redrawing them.  Back
+  // where it started, the marks have nothing to shade and hide themselves.
+  const preview = () => {
+    for (const m of windowMarks) m(+lo.value, +hi.value);
+  };
+  lo.addEventListener("input", () => {
+    if (+lo.value >= +hi.value) lo.value = +hi.value - 1;
+    paint();
+    preview();
+  });
+  hi.addEventListener("input", () => {
+    if (+hi.value <= +lo.value) hi.value = +lo.value + 1;
+    paint();
+    preview();
+  });
+  const commit = which => () => {
+    // A chosen snapshot at the end of the window is taken to mean "the
+    // latest", and goes with the end; anywhere else it stays put unless the
+    // window leaves it behind.
+    const atEnd = state.snap === state.to;
+    state.from = +lo.value;
+    state.to = +hi.value;
+    if (atEnd) state.snap = state.to;
+    clampSnap();
+    windowFocus = which;
+    render();
+  };
+  lo.addEventListener("change", commit("lo"));
+  hi.addEventListener("change", commit("hi"));
+  // Only the thumbs take the pointer, so where the two sit close together the
+  // upper input's thumb covers the other one.  Raise whichever is nearer the
+  // pointer before it gets there, so either can always be picked up.
+  dual.addEventListener("pointermove", ev => {
+    if (ev.buttons) return;
+    const r = dual.getBoundingClientRect();
+    const at = (ev.clientX - r.left - 8) / Math.max(1, r.width - 16) * last;
+    const loNearer = Math.abs(at - lo.value) < Math.abs(at - hi.value);
+    lo.classList.toggle("top", loNearer);
+    hi.classList.toggle("top", !loNearer);
+  });
+  paint();
+
+  box.appendChild(left);
+  box.appendChild(dual);
+  box.appendChild(right);
+  const chips = document.createElement("div");
+  chips.className = "chips";
+  chips.appendChild(box);
+  if (state.from !== DEFAULTS.from || state.to !== DEFAULTS.to) {
+    const all = document.createElement("button");
+    all.className = "chip p-chip is-dense allnone";
+    all.type = "button";
+    all.textContent = "whole range";
+    all.title = "every snapshot the page has, which is what it opens with";
+    all.addEventListener("click", () => {
+      const atEnd = state.snap === state.to;
+      state.from = DEFAULTS.from;
+      state.to = DEFAULTS.to;
+      if (atEnd) state.snap = state.to;
+      render();
+    });
+    chips.appendChild(all);
+  }
+  row.appendChild(chips);
+  host.appendChild(row);
+  if (windowFocus) (windowFocus === "lo" ? lo : hi).focus();
+  windowFocus = null;
+}
+
 /** One line describing the filters, for when the rows are folded away.
  *
  *  Worth the space: a folded filter row would otherwise leave every chart
@@ -1334,6 +1596,10 @@ function filterSummary() {
     dim(state.pocket, DATA.pockets, "pockets"),
     dim(state.comp, D.components, "components"),
   ];
+  if (state.from !== DEFAULTS.from || state.to !== DEFAULTS.to) {
+    bits.push(stamp(D.snapshots[state.from]) + " to " +
+              stamp(D.snapshots[state.to]));
+  }
   if (state.metric !== DEFAULTS.metric) bits.push("installed size");
   if (state.splitBy !== DEFAULTS.splitBy) bits.push("a line per architecture");
   if (state.shown === "log") bits.push("log scale");
@@ -1377,6 +1643,7 @@ function buildFilters() {
                            i => archSwatch(i)));
   host.appendChild(chipRow("Pocket", DATA.pockets, state.pocket, toggler(state.pocket)));
   host.appendChild(chipRow("Component", D.components, state.comp, toggler(state.comp)));
+  windowRow(host);
 
   host.appendChild(pickRow("Measure", [["size", "Download size"],
                                        ["isize", "Installed size"]], "metric"));
@@ -1538,7 +1805,7 @@ function viewTable(host, tl) {
   for (const s of sel) html += "<th>" + sp.names[s] + "</th>";
   html += "<th>all selected</th></tr></thead><tbody>";
   D.snapshots.forEach((snapshot, i) => {
-    if (!tl.totals[i].total) return;
+    if (!inWindow(i) || !tl.totals[i].total) return;
     html += "<tr><td>" + stamp(snapshot) + "</td>";
     for (const s of sel) {
       const cell = (tl.perKey.get(s) || [])[i];
@@ -1603,12 +1870,15 @@ function snapshotChooser(host, redraw) {
   row.className = "slider-row";
   const range = document.createElement("input");
   range.type = "range";
-  range.min = 0;
-  range.max = D.snapshots.length - 1;
+  // Only the snapshots inside the time window, so the chooser and the charts
+  // above it cover the same stretch.
+  range.min = state.from;
+  range.max = state.to;
   range.value = state.snap;
   const fill = () => {
+    const span = range.max - range.min;
     range.style.backgroundSize =
-      (range.max > 0 ? 100 * range.value / range.max : 0) + "% 100%, auto";
+      (span > 0 ? 100 * (range.value - range.min) / span : 0) + "% 100%, auto";
   };
   fill();
   const label = document.createElement("div");
@@ -1639,7 +1909,9 @@ function snapshotChooser(host, redraw) {
 
 function viewArchive(host) {
   const tl = timeline();
-  const live = tl.totals.map((c, i) => (c && c.total ? i : -1)).filter(i => i >= 0);
+  // The note under the first chart reads the window's ends, not the data's.
+  const live = tl.totals.map((c, i) => (c && c.total ? i : -1))
+    .filter(i => i >= 0 && inWindow(i));
   if (!live.length) {
     host.innerHTML = '<div class="card"><div class="empty">' +
       "Nothing selected.</div></div>";
@@ -1748,7 +2020,7 @@ function viewArchive(host) {
     let html = "<table><thead><tr><th>Snapshot</th><th>Archive</th>" +
                "<th>Kernels</th><th>Share</th><th>Packages</th></tr></thead><tbody>";
     tl.totals.forEach((cell, i) => {
-      if (!cell || !cell.total) return;
+      if (!inWindow(i) || !cell || !cell.total) return;
       html += "<tr><td>" + stamp(D.snapshots[i]) + '</td><td class="num">' +
         bytes(cell.total) + '</td><td class="num">' + bytes(cell.kernel) +
         '</td><td class="num">' + pct(cell.total ? cell.kernel / cell.total : 0) +
@@ -1765,7 +2037,8 @@ function viewArchive(host) {
 
 function viewLists(host) {
   const il = indexTimeline();
-  const live = il.totals.map((c, i) => (c.files ? i : -1)).filter(i => i >= 0);
+  const live = il.totals.map((c, i) => (c.files ? i : -1))
+    .filter(i => i >= 0 && inWindow(i));
   if (!live.length) {
     host.innerHTML = '<div class="card"><div class="empty">' +
       "No index files in this selection. Note that 'all' is not an index " +
@@ -1988,7 +2261,7 @@ function viewLists(host) {
       "<th>Entries</th><th>Kernel</th><th>Share</th><th>Compressed</th>" +
       "<th>Uncompressed</th><th>Of archive</th></tr></thead><tbody>";
     il.totals.forEach((c, i) => {
-      if (!c.files) return;
+      if (!inWindow(i) || !c.files) return;
       const arch = tl.totals[i] ? tl.totals[i].total : 0;
       html += "<tr><td>" + stamp(D.snapshots[i]) + '</td><td class="num">' +
         count(c.files) + '</td><td class="num">' + count(c.n) +
@@ -2159,6 +2432,7 @@ function render() {
   // The tab is removed at load for a dataset that predates the index table,
   // but do not make the dispatch depend on that having happened.
   if (state.view === "lists" && !DATA.byIndex) state.view = DEFAULTS.view;
+  clampSnap();
   assignSlots();
   buildFilters();
   updateTiles();
@@ -2171,6 +2445,7 @@ function render() {
   zoomFound = false;
   snapMarks = [];
   snapFollow = false;
+  windowMarks = [];
   if (!state.series.size || !state.arch.size || !state.pocket.size || !state.comp.size) {
     host.innerHTML = '<div class="card"><div class="empty">' +
       "Select at least one of each filter.</div></div>";
