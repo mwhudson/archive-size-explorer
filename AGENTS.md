@@ -14,8 +14,9 @@ framework, so the way to check a change is to execute it. That is what
 $ ./archive-size-explorer build -o page.html
 $ ./tests/check page.html
 notes: 55 ok, 0 failed
-tabs: 23 ok, 0 failed
-url: 30 ok, 0 failed
+tabs: 27 ok, 0 failed
+url: 50 ok, 0 failed
+window: 44 ok, 0 failed
 ```
 
 `apt install nodejs` is the whole of the setup — there is no `package.json`,
@@ -42,6 +43,9 @@ before they mean anything.
 * **`notes.js`** pins where the explanatory prose lives: that the collapsed
   footer block says the right things, and that no chart has gone back to
   repeating them.
+* **`window.js`** drives the time window's two thumbs: that a drag relabels
+  without committing, that letting go narrows every chart, table and note and
+  hands focus back, and that the thumbs can neither cross nor meet.
 
 `tests/page.js` is the loader, `tests/stub.js` the DOM — about a hundred and
 thirty lines covering `createElement`, `appendChild`, `classList`, `dataset`,

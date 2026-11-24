@@ -32,6 +32,13 @@ suite(async ({page, check}) => {
     ["f=0",         () => { T.state.filters = false; }],
     ["z=archive-share", () => { T.state.zoom = "archive-share"; }],
     ["n=" + D.snapshots[0], () => { T.state.snap = 0; }],
+    // The window writes only the ends that moved, so one running to the
+    // newest snapshot stays open-ended across a rebuild.
+    ["t=" + D.snapshots[3] + "..", () => { T.state.from = 3; }],
+    ["n=" + D.snapshots[5] + "&t=.." + D.snapshots[5],
+     () => { T.state.to = 5; T.state.snap = 5; }],
+    ["n=" + D.snapshots[5] + "&t=" + D.snapshots[2] + ".." + D.snapshots[9],
+     () => { T.state.from = 2; T.state.to = 9; T.state.snap = 5; }],
   ];
   for (const [want, apply] of cases) {
     clean(T);
@@ -61,6 +68,53 @@ suite(async ({page, check}) => {
   clean(T);
   T.applyHash("#s=noble,nosuchseries");
   check("unknown series survives", [...T.state.series].length, 1);
+
+  // A window end is a date rather than a stamp the page must have, so a link
+  // moves between the weekly and monthly pages and can be written by hand.
+  const last = D.snapshots.length - 1;
+  const win = () => [T.state.from, T.state.to];
+  const at = s => D.snapshots.indexOf(s);
+  clean(T);
+  T.applyHash("#t=" + D.snapshots[4].slice(0, 8) + ".." +
+              D.snapshots[10].slice(0, 8));
+  check("window from bare dates", win(), [4, 10]);
+  clean(T);
+  // A day after a snapshot starts at the next one and ends at that one.
+  const dayAfter = s => {
+    const d = new Date(Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1,
+                                +s.slice(6, 8) + 1));
+    return d.toISOString().slice(0, 10).replace(/-/g, "");
+  };
+  T.applyHash("#t=" + dayAfter(D.snapshots[4]) + ".." + dayAfter(D.snapshots[10]));
+  check("window between snapshots", win(), [5, 10]);
+  clean(T);
+  T.applyHash("#t=19990101..29991231");
+  check("window wider than the data", win(), [0, last]);
+  check("... writes nothing", T.encodeState(), "");
+
+  // Rubbish leaves the window alone and the rest of the link applies.
+  for (const bad of ["garbage", "2024..2025", ".." + D.snapshots[0],
+                     D.snapshots[9] + ".." + D.snapshots[2],
+                     D.snapshots[5] + ".." + D.snapshots[5],
+                     "29990101..", "a..b..c"]) {
+    clean(T);
+    T.applyHash("#v=time&t=" + bad);
+    check("bad window ignored: " + bad, [win(), T.state.view],
+          [[0, last], "time"]);
+  }
+
+  // The chosen snapshot cannot be outside the window, whichever order the
+  // link names them in.
+  clean(T);
+  T.applyHash("#n=" + D.snapshots[1] + "&t=" + D.snapshots[4] + "..");
+  check("snapshot pulled into window", T.state.snap, 4);
+  clean(T);
+  T.applyHash("#t=.." + D.snapshots[8]);
+  check("latest snapshot follows the window's end", T.state.snap, at(D.snapshots[8]));
+
+  // Reset is a filter reset, and the window is a filter.
+  T.resetDefaults();
+  check("Reset clears the window", win(), [0, last]);
 
   // A stray % makes decodeURIComponent throw.  Only that key may go: the rest
   // of the link still applies.

@@ -6,6 +6,7 @@
 // child text nodes rather than returning only what was assigned; and setting
 // innerHTML to "" actually drops the children.
 let idSeq = 0;
+let focused = null;
 
 class Node_ {
   constructor(tag) {
@@ -14,7 +15,9 @@ class Node_ {
     this.parentNode = null;
     this.attrs = {};
     this.dataset = {};
-    this.style = {};
+    // Custom properties land under their own name, so a test can read --lo
+    // back the way it reads width.
+    this.style = {setProperty(k, v) { this[k] = String(v); }};
     this._text = "";
     this._seq = idSeq++;
     this.classList = {
@@ -57,6 +60,7 @@ class Node_ {
   }
   dispatch(ev, arg) { (this.listeners[ev] || []).forEach(f => f.call(this, arg)); }
   click() { this.dispatch("click", {preventDefault() {}, stopPropagation() {}}); }
+  focus() { focused = this; }
   get textContent() {
     if (this.tagName === "#TEXT") return this._text;
     return this._text + this.children.map(c => c.textContent).join("");
@@ -108,6 +112,7 @@ const document = {
   querySelector: sel => document.body.querySelector(sel),
   querySelectorAll: sel => document.body.querySelectorAll(sel),
   addEventListener: () => {},
+  get activeElement() { return focused; },
 };
 
 /** Register the ids the page looks up, and the tabs it queries for. */

@@ -46,6 +46,13 @@ the others.
 A "one line per" control switches the charts between a line per series and a
 line per architecture.
 
+**Time window** narrows every tab to a stretch of the snapshots: drag the two
+thumbs to the first and last you want, and the charts redraw when you let go.
+The line charts' axes rescale to fit, the tables and the notes under the charts
+cover only that stretch, and the snapshot chooser offers only the snapshots
+inside it. A rate of change still measures back across the window's start, so
+narrowing the window does not cost a line its first few months.
+
 The page opens with the series a mirror still has to carry ticked, and the ones
 moved off to old-releases.ubuntu.com left alone. **select default** on the
 series row puts that selection back once you have clicked around, and **Reset**
@@ -75,16 +82,18 @@ how much the archive grew over the window and what it did to the kernel share,
 or how many index files there are now against the start.
 
 The address bar follows the page, so a link carries the filters, the tab, the
-chosen snapshot and whichever chart is focused. Only what differs from the
-defaults is written, which leaves an untouched page with a clean URL and makes
-a shared link read as a list of what the sender changed —
+time window, the chosen snapshot and whichever chart is focused. Only what
+differs from the defaults is written, which leaves an untouched page with a
+clean URL and makes a shared link read as a list of what the sender changed —
 `#v=time&s=trusty,xenial&d=log&f=0` is the Over time tab, two series, log
 scale, filters folded. It goes in the hash rather than a query string so that a
 page opened over `file://` carries it too, and it is written with names and
 snapshot stamps rather than indices so that a link still means the same thing
 after the next rebuild. A key the page no longer recognises is ignored instead
 of fatal, and a focus key naming no chart on the tab is dropped rather than
-left showing an empty page.
+left showing an empty page. The time window's ends are read as dates rather
+than as stamps the page must have, so `t=20250101..` opens the window at the
+first snapshot of 2025 on the weekly page and the monthly one alike.
 
 ### Lines show
 
@@ -550,14 +559,15 @@ header plus one packed blob. The page is styled with
 the Ubuntu font; both are in `vendor/` and inlined into the page by the build,
 so it still makes no network requests. `vendor/update` recompiles the CSS for
 a new Vanilla release. `tests/` holds the page's tests, which run its
-JavaScript under a stub DOM in node — the tab row, the URL round trip, and
-where the explanatory prose lives:
+JavaScript under a stub DOM in node — the tab row, the URL round trip, the
+time window, and where the explanatory prose lives:
 
 ```console
 $ ./tests/check page.html
 notes: 55 ok, 0 failed
-tabs: 23 ok, 0 failed
-url: 30 ok, 0 failed
+tabs: 27 ok, 0 failed
+url: 50 ok, 0 failed
+window: 44 ok, 0 failed
 ```
 
 They want a built page rather than the template, since they run the page's own
