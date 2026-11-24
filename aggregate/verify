@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Canonical Ltd.
 # SPDX-License-Identifier: GPL-3.0-only
-"""Check archive-aggregate against the aggregates Python has already cached.
+"""Check archive-aggregate against the aggregates already cached.
 
   aggregate/verify --from 2023-03            # every monthly snapshot
   aggregate/verify --every week --from 2026-06
 
 For each snapshot it plans the job exactly as `build` would -- same series,
-same live pin, same cache key -- runs the Rust aggregator over it, and
-compares the text it prints with the cached entry byte for byte.  The cache
-is only read, never written, so a mismatch cannot leak into a page.
+same live pin, same cache key -- runs the aggregator over it, and compares
+the text it prints with the cached entry byte for byte.  The cache is only
+read, never written, so a mismatch cannot leak into a page.
+
+That makes it the check to run after changing the aggregator in a way that
+should not move any number: every cached snapshot is a test case.  After a
+change that should, it is the list of what moved, and AGGREGATE_VERSION wants
+bumping.
 
 A snapshot with no cached entry under the current key is skipped rather than
 counted as a pass: there is nothing to compare against.
@@ -29,45 +34,26 @@ ROOT = os.path.join(HERE, "..")
 sys.path.insert(0, ROOT)
 
 from archive_sizes import (  # noqa: E402
-    CANDIDATE_SERIES, LIVE_SERIES, POCKETS, series_bit, snapshots,
+    AGGREGATOR, CANDIDATE_SERIES, LIVE_SERIES, snapshots,
 )
 
 cli = SourceFileLoader(
     "archive_size_explorer",
     os.path.join(ROOT, "archive-size-explorer")).load_module()
 
-BINARY = os.path.join(HERE, "target", "release", "archive-aggregate")
-
-
 def job_for(builder, snap, series_list, live_names, token):
-    """The job text for one snapshot, or None if the cache cannot supply it.
-
-    Index lines go in load_rows's order -- component, then pocket, then plan
-    order -- because the first sighting of a pool file decides its columns.
-    """
-    lines = []
-    pocket_bit = {p: 1 << i for i, p in enumerate(POCKETS)}
+    """The job `build` would hand the aggregator, or None if the cache cannot
+    supply every blob for it -- the run is offline, so nothing is fetched."""
+    planned = []
     for series in series_list:
         src = token if series in live_names else snap
         try:
-            plan = builder.plan(src, series)
+            plan = builder.fetch(src, series)
         except cli.SkipOffline:
             return None
-        if plan is None:
-            continue
-        for ix in plan:
-            if not builder.cache.have_blob(ix.sha, ix.arch == "source"):
-                return None
-        lines.append("series\t%s\t%d" % (series, series_bit(series)))
-        for component in builder.components:
-            for pocket in builder.pockets:
-                for ix in plan:
-                    if ix.component == component and ix.pocket == pocket:
-                        lines.append("\t".join(map(str, [
-                            "ix", ix.component, ix.arch, ix.pocket,
-                            pocket_bit[pocket], ix.csize, ix.usize,
-                            builder.cache.blob_path(ix.sha)])))
-    return "\n".join(lines) + "\n"
+        if plan is not None:
+            planned.append((series, plan))
+    return builder.job(planned) if planned else None
 
 
 def main():
@@ -86,7 +72,7 @@ def main():
     series_list += live_names
 
     passed = failed = skipped = 0
-    py_secs = rust_secs = 0.0
+    rust_secs = 0.0
     for snap in snapshots(args.from_, args.to, args.every):
         key = cli.snapshot_key(builder, snap, series_list, live_names, token)
         path = builder.cache.aggregate_path(snap, key) if key else None
@@ -98,7 +84,7 @@ def main():
         with gzip.open(path, "rt") as f:
             want = f.read()
         started = time.time()
-        run = subprocess.run([BINARY], input=job, capture_output=True,
+        run = subprocess.run([AGGREGATOR], input=job, capture_output=True,
                              text=True)
         took = time.time() - started
         if run.returncode != 0:

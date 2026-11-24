@@ -35,9 +35,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from archive_sizes import (  # noqa: E402
     ARCHIVE_BASE, Builder, Cache, Fetcher, CANDIDATE_SERIES,
     DEFAULT_COMPONENTS, LIVE, LIVE_SERIES, MIRROR_MAX_AGE, OTHER, POCKETS,
-    MIRROR_REMOVED, RELEASE_ORDER, SEPARATE_SERIES, aggregate, aggregate_key,
-    count_index, default_cache_dir, kernel_predicate, live_digest,
-    live_entries, log, merge_rows, probe_mirror, removed_after, series_bit,
+    MIRROR_REMOVED, RELEASE_ORDER, SEPARATE_SERIES, NoAggregator,
+    aggregate_key, default_cache_dir, live_digest, live_entries, log,
+    parse_aggregate, probe_mirror, removed_after, run_aggregator, series_bit,
     snapshots,
 )
 
@@ -212,33 +212,6 @@ def live_token(builder, names, refresh):
     return token
 
 
-def tally_indexes(cache, plans, is_kernel, into):
-    """Size and entry count of every index behind one snapshot.
-
-    Deliberately not deduplicated: the archive really does publish one
-    binary-<arch>/Packages per component per pocket per series, and an
-    Architecture: all package really is a stanza in each of them.  That is what
-    makes this table different in kind from the others -- it measures the lists
-    rather than the pool they point at.
-
-    A second pass over the blobs, because kernel-ness is a property of the
-    whole snapshot and is not known until every index has been read.  Nothing
-    is downloaded here; load_rows has already put it all in the cache.
-    """
-    counted = {}
-    for series, plan in plans:
-        for ix in plan:
-            tally = counted.get(ix.sha)
-            if tally is None:
-                tally = counted[ix.sha] = count_index(cache, ix.sha, is_kernel)
-            acc = into.setdefault(
-                (series, ix.pocket, ix.component, ix.arch), [0, 0, 0, 0])
-            acc[0] += tally[0]
-            acc[1] += tally[1]
-            acc[2] += ix.csize
-            acc[3] += ix.usize
-
-
 def aggregate_snapshot(builder, snap, series_list, live_names=(),
                        live_token=None):
     """Merge one snapshot's pool over series_list and aggregate it.
@@ -258,30 +231,24 @@ def aggregate_snapshot(builder, snap, series_list, live_names=(),
     still uses, and arch-independent data packages at identical versions
     across releases.
     """
-    whole = {}
-    plans = []
+    planned = []
     here = []
     partial = False
     for series in series_list:
         src = live_token if series in live_names else snap
         try:
-            rows = builder.load_rows(src, series)
+            plan = builder.fetch(src, series)
         except SkipOffline:
             partial = True
             continue
-        if rows is None:
+        if plan is None:
             continue
         here.append(series)
-        plans.append((series, builder.plan(src, series)))
-        merge_rows(whole, rows, series_bit(series))
-        del rows
-    if not whole:
+        planned.append((series, plan))
+    if not planned:
         return None, None, {}, here, partial
-    is_kernel = kernel_predicate(whole)
-    cls_table, flav_table = aggregate(whole, is_kernel)
-    idx_table = {}
-    tally_indexes(builder.cache, plans, is_kernel, idx_table)
-    del whole
+    cls_table, flav_table, idx_table, _ = parse_aggregate(
+        run_aggregator(builder.job(planned)).splitlines())
     return cls_table, flav_table, idx_table, here, partial
 
 
@@ -847,39 +814,37 @@ def collect_sources(builder, snaps, series_list, match=None, family=False,
     seen = []
     started = time.time()
     for i, snap in enumerate(snaps, 1):
-        whole = {}
+        planned = []
         for series in series_list:
             try:
-                rows = builder.load_rows(snap, series)
+                plan = builder.fetch(snap, series)
             except SkipOffline:
                 continue
-            if rows is None:
+            if plan is None:
                 continue
             if series not in seen:
                 seen.append(series)
-            merge_rows(whole, rows, series_bit(series))
-            del rows
-        if whole:
-            is_kernel_row = kernel_predicate(whole)
-            overall = archive.setdefault(snap, [0, 0])
-            for (pkg, _ver, _arch), row in whole.items():
-                name = pkg.decode()
-                kernel = is_kernel_row(name, row.src)
-                overall[0] += row.size
-                if kernel:
-                    overall[1] += row.size
+            planned.append((series, plan))
+        if planned:
+            out = run_aggregator(builder.job(planned), "--sources")
+            for line in out.splitlines():
+                fields = line.split("\t")
+                if fields[0] == "t":
+                    archive[snap] = [int(fields[1]), int(fields[2])]
+                    continue
+                src, kernel = fields[1], fields[2] == "1"
+                size, files = int(fields[3]), int(fields[4])
                 if kernels == "only" and not kernel:
                     continue
                 if kernels == "skip" and kernel:
                     continue
-                if match is not None and not match.search(row.src):
+                if match is not None and not match.search(src):
                     continue
-                group = family_of(row.src) if family else row.src
+                group = family_of(src) if family else src
                 acc = totals.setdefault((snap, group), [0, 0, set()])
-                acc[0] += row.size
-                acc[1] += 1
-                acc[2].add(row.src)
-            del whole
+                acc[0] += size
+                acc[1] += files
+                acc[2].add(src)
         if progress:
             log("[%d/%d] %s  %d blobs fetched (%.1f MiB), %d cached, %.0fs"
                 % (i, len(snaps), snap, builder.downloads,
@@ -1055,6 +1020,9 @@ def main():
     except KeyboardInterrupt:
         log("interrupted; the cache keeps what was already fetched")
         return 130
+    except NoAggregator as e:
+        log(str(e))
+        return 2
 
 
 if __name__ == "__main__":

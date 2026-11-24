@@ -1,14 +1,14 @@
 // Copyright (C) 2026 Canonical Ltd.
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! One snapshot's aggregate, the slow half of archive_sizes.aggregate_snapshot.
+//! One snapshot's aggregate: the part of a build that costs.
 //!
-//! Python still decides *what* to read -- Release lookups, cache keys, the
-//! live pin -- and hands this a job on stdin naming every series present and
-//! the cached blobs behind it, in the order load_rows would walk them.  What
-//! comes out on stdout is the aggregate in exactly the text the cache stores
-//! (Cache.put_aggregate), so the two implementations can be compared byte for
-//! byte against every aggregate already cached.
+//! Python decides *what* to read -- Release lookups, cache keys, the live pin
+//! -- and hands this a job on stdin naming every series present and the
+//! cached blobs behind it (Builder.job).  What comes out on stdout is the
+//! aggregate in exactly the text the cache stores (Cache.put_aggregate), so a
+//! fresh aggregate can be compared byte for byte with a cached one, which is
+//! what aggregate/verify does.
 //!
 //! Job format, tab-separated, one record per line:
 //!
@@ -19,7 +19,14 @@
 //! Each ix belongs to the series line above it, and the ix lines come in
 //! load order: component, then pocket, then plan order.  That order is not
 //! cosmetic -- the first sighting of a pool file decides its component and
-//! every other column, exactly as it does in load_slim and merge_rows.
+//! every other column.
+//!
+//! With --sources it prints, instead of the aggregate, the bytes and pool
+//! files of every source package, split by whether the kernel rule claims
+//! them, which is what `breakdown` ranks:
+//!
+//!   t  <all bytes>  <kernel bytes>
+//!   p  <source>  <1 if kernel, else 0>  <bytes>  <files>
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -119,11 +126,12 @@ fn shard_of(pkg: &[u8], shards: usize) -> usize {
     ((h.finish() >> 32) as usize) % shards
 }
 
-/// load_slim, with merge_rows folded in, for the packages of one shard.
+/// Every pool file of one shard's packages, across the whole snapshot.
 ///
-/// Inserting into one snapshot-wide map with the series bit already set gives
-/// the same rows as building a per-series map and merging it: in both, the
-/// first sighting fixes every column and later ones only widen the masks.
+/// A file is recorded once however many indexes list it: a package published
+/// to two pockets, or referenced by two series, is one file in the pool, so
+/// its first sighting fixes every column and later ones only widen the pocket
+/// and series masks.
 ///
 /// A pool file's row depends only on the order of its own sightings, so the
 /// packages can be split between threads by name as long as each thread
@@ -156,6 +164,21 @@ fn load_shard<'a>(
     rows
 }
 
+/// One slim row into the map.
+///
+/// The architecture a row is filed under is the *index directory's*, not the
+/// Architecture field, with one exception.  Packages in binary-amd64v3 declare
+/// "Architecture: amd64" while being a separate build at a separate pool path
+/// (foo_1.0_amd64v3.deb beside foo_1.0_amd64.deb), so trusting the field would
+/// key both to the same row and quietly drop one of the two files.  The
+/// exception is Architecture: all, which really is one file listed in every
+/// binary-<arch> directory, and has to collapse to a single "all" row rather
+/// than being counted once per architecture.
+///
+/// A Sources row also names its upstream tarballs, and each becomes a row of
+/// its own keyed by file name in place of a version, so that every version
+/// sharing one finds the same row.  It counts as no package: the source
+/// version that names it is already counted.
 fn load_line<'a>(line: &'a [u8], ix: &'a Ix, dir_arch: &'a [u8], series_bit: u64,
                  rows: &mut Rows<'a>) {
     let mut fields: [&'a [u8]; 8] = [b""; 8];
@@ -222,9 +245,9 @@ fn load_line<'a>(line: &'a [u8], ix: &'a Ix, dir_arch: &'a [u8], series_bit: u64
 
 // ---------------------------------------------------------------- kernels
 
-/// extract_kver: the kernel version out of linux-image[-unsigned]-<ver>.
-/// Both prefixes are tried in turn, as in Python, so that
-/// linux-image-unsigned-generic falls through to the second and fails there.
+/// The kernel version out of linux-image[-unsigned]-<ver>.  Both prefixes
+/// are tried in turn, so that linux-image-unsigned-generic falls through to
+/// the second and fails there.
 fn extract_kver(pkg: &[u8]) -> Option<&[u8]> {
     for prefix in [&b"linux-image-unsigned-"[..], b"linux-image-"] {
         if let Some(rest) = pkg.strip_prefix(prefix) {
@@ -244,8 +267,11 @@ struct Kernels<'a> {
 }
 
 impl<'a> Kernels<'a> {
-    /// kernel_predicate's two halves.  Both need the whole snapshot, so each
-    /// shard contributes its part and the parts are unioned.
+    /// The kernel rule's two halves: every binary of a source that ships
+    /// something providing linux-image, plus any linux-objects-*-<kver> built
+    /// for a kernel version seen in those images.  Both need the whole
+    /// snapshot in hand before anything can be judged, so each shard
+    /// contributes its part and the parts are unioned.
     fn gather(rows: &Rows<'a>) -> Self {
         let mut k = Kernels::default();
         for (&(pkg, _, _), row) in rows {
@@ -265,8 +291,14 @@ impl<'a> Kernels<'a> {
         self
     }
 
-    /// is_objects_for: try each "-" after the first character as the split
-    /// between the objects name and a kernel version.
+    /// linux-objects-<anything>-<kver>, for a kver seen in the images.
+    ///
+    /// The obvious spelling is a regex, ^linux-objects-.+-(kver1|kver2|...)$,
+    /// but the alternation ends up holding every kernel version in the
+    /// snapshot -- six thousand branches for 2026-09, walked one at a time.
+    /// Trying each "-" as the split point and looking the tail up in the set
+    /// matches exactly the same names far faster.  The search starts at 1
+    /// because the ".+" needs at least one character before the version.
     fn is_objects(&self, name: &[u8]) -> bool {
         let Some(rest) = name.strip_prefix(b"linux-objects-") else {
             return false;
@@ -287,7 +319,11 @@ struct Classifier {
 }
 
 impl Classifier {
-    /// CLASSES and VERSUFFIX from archive_sizes.py, in the same order.
+    /// Kernel binaries are named linux-<flavour>-<part>-<version>, so the
+    /// part that says what kind of package it is can appear anywhere in the
+    /// name (compare linux-headers-6.8.0-31 with
+    /// linux-aws-6.14-headers-6.14.0-1012).  Matched in order; first hit wins.
+    /// The version suffix is the -6.11 of linux-hwe-6.11.
     fn new() -> Self {
         let classes = [
             ("objects", r"(^|-)objects-"),
@@ -319,6 +355,10 @@ impl Classifier {
             .map_or("misc", |&(label, _)| label)
     }
 
+    /// Collapse a kernel source name to the kernel family it belongs to:
+    /// linux-signed-aws-6.11 and linux-restricted-modules-aws both become
+    /// linux-aws, so signed variants and restricted modules line up with the
+    /// kernel they are built against.
     fn flavour(&self, src: &str) -> String {
         let src = if let Some(rest) = src.strip_prefix("linux-signed-") {
             format!("linux-{}", rest)
@@ -383,8 +423,12 @@ fn merge<'a>(mut a: Table<'a>, b: Table<'a>) -> Table<'a> {
     a
 }
 
-/// count_index: stanzas in one index and how many are kernels, counted the
-/// way the list publishes them rather than the way the pool stores them.
+/// Stanzas in one index and how many are kernels, counted the way the list
+/// publishes them rather than the way the pool stores them: an Architecture:
+/// all package is a line in every binary-<arch> index that carries it, and a
+/// package in two pockets is a line in each.  That is the right unit for "how
+/// long is this list" and the wrong one for "how big is the archive", which
+/// is what everything else here counts.
 fn count_index(data: &[u8], kernels: &Kernels) -> (u64, u64) {
     let (mut n, mut kn) = (0, 0);
     for line in data.split(|&c| c == b'\n') {
@@ -417,8 +461,49 @@ fn utf8(b: &[u8]) -> &str {
     std::str::from_utf8(b).expect("utf-8")
 }
 
+/// --sources: bytes and files per (source, is kernel), for `breakdown`.
+fn print_sources(parts: &[Rows], kernels: &Kernels) {
+    let per: FxHashMap<(&[u8], bool), [u64; 2]> = parts
+        .par_iter()
+        .map(|rows| {
+            let mut per: FxHashMap<(&[u8], bool), [u64; 2]> = FxHashMap::default();
+            for (&(pkg, _, _), row) in rows {
+                let acc = per.entry((row.src, kernels.is_kernel(pkg, row.src))).or_default();
+                acc[0] += row.size;
+                acc[1] += 1;
+            }
+            per
+        })
+        .reduce(FxHashMap::default, |mut a, b| {
+            for (k, v) in b {
+                let acc = a.entry(k).or_default();
+                acc[0] += v[0];
+                acc[1] += v[1];
+            }
+            a
+        });
+    let mut rows: Vec<_> = per.into_iter().collect();
+    rows.sort_unstable();
+    let total: u64 = rows.iter().map(|(_, v)| v[0]).sum();
+    let kernel: u64 = rows.iter().filter(|((_, k), _)| *k).map(|(_, v)| v[0]).sum();
+    let mut out = BufWriter::new(io::stdout().lock());
+    writeln!(out, "t\t{}\t{}", total, kernel).unwrap();
+    for ((src, k), v) in rows {
+        writeln!(out, "p\t{}\t{}\t{}\t{}", utf8(src), k as u8, v[0], v[1]).unwrap();
+    }
+    out.flush().unwrap();
+}
+
 fn main() {
     let started = Instant::now();
+    let sources_mode = match std::env::args().nth(1).as_deref() {
+        None => false,
+        Some("--sources") => true,
+        Some(other) => {
+            eprintln!("archive-aggregate: unknown argument {:?}", other);
+            std::process::exit(2);
+        }
+    };
     let job = match read_job(io::stdin().lock()) {
         Ok(job) => job,
         Err(e) => {
@@ -459,6 +544,10 @@ fn main() {
         .par_iter()
         .map(Kernels::gather)
         .reduce(Kernels::default, Kernels::union);
+    if sources_mode {
+        print_sources(&parts, &kernels);
+        return;
+    }
     let classifier = Classifier::new();
     let (by_class, by_source) = parts
         .par_iter()

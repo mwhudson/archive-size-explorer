@@ -1,6 +1,9 @@
 # Copyright (C) 2026 Canonical Ltd.
 # SPDX-License-Identifier: GPL-3.0-only
-"""Shared guts of archive-size-explorer: fetching, caching and aggregating.
+"""Shared guts of archive-size-explorer: fetching, caching and planning.
+
+The aggregating itself -- reading the cached blobs and turning a snapshot into
+its tables -- is archive-aggregate, in aggregate/, which this drives.
 
 The unit of caching is one binary/source index blob, keyed by the SHA256 that
 the suite's Release file records for it.  That makes the cache dedupe for free:
@@ -24,10 +27,11 @@ import lzma
 import os
 import random
 import re
+import subprocess
 import sys
 import threading
 import time
-from collections import defaultdict, namedtuple
+from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -231,6 +235,33 @@ def log(msg):
     sys.stderr.flush()
 
 
+def parse_aggregate(lines):
+    """(by_class, by_flavour, by_index, series) out of an aggregate's text.
+
+    The one format both ends speak: the cache stores it, and archive-aggregate
+    prints it, so a fresh aggregate and a cached one read back the same way.
+    """
+    by_class, by_flavour, by_index, series = {}, {}, {}, []
+    for line in lines:
+        kind, _, rest = line.rstrip("\n").partition("\t")
+        fields = rest.split("\t")
+        if kind == "s":
+            series = rest.split()
+        elif kind == "c":
+            by_class[(int(fields[0]), fields[1], fields[2],
+                      int(fields[3]), fields[4])] = [
+                int(fields[5]), int(fields[6]), int(fields[7])]
+        elif kind == "f":
+            by_flavour[(int(fields[0]), fields[1], fields[2],
+                        int(fields[3]), fields[4])] = [
+                int(fields[5]), int(fields[6]), int(fields[7])]
+        elif kind == "i":
+            by_index[(fields[0], fields[1], fields[2], fields[3])] = [
+                int(fields[4]), int(fields[5]), int(fields[6]),
+                int(fields[7])]
+    return by_class, by_flavour, by_index, series
+
+
 # ---------------------------------------------------------------- cache
 
 
@@ -377,26 +408,8 @@ class Cache:
         path = self.aggregate_path(snapshot, key)
         if not os.path.exists(path):
             return None
-        by_class, by_flavour, by_index, series = {}, {}, {}, []
         with gzip.open(path, "rt") as f:
-            for line in f:
-                kind, _, rest = line.rstrip("\n").partition("\t")
-                fields = rest.split("\t")
-                if kind == "s":
-                    series = rest.split()
-                elif kind == "c":
-                    by_class[(int(fields[0]), fields[1], fields[2],
-                              int(fields[3]), fields[4])] = [
-                        int(fields[5]), int(fields[6]), int(fields[7])]
-                elif kind == "f":
-                    by_flavour[(int(fields[0]), fields[1], fields[2],
-                                int(fields[3]), fields[4])] = [
-                        int(fields[5]), int(fields[6]), int(fields[7])]
-                elif kind == "i":
-                    by_index[(fields[0], fields[1], fields[2], fields[3])] = [
-                        int(fields[4]), int(fields[5]), int(fields[6]),
-                        int(fields[7])]
-        return by_class, by_flavour, by_index, series
+            return parse_aggregate(f)
 
     def put_aggregate(self, snapshot, key, by_class, by_flavour, by_index,
                       series):
@@ -701,259 +714,16 @@ def slim_sources(raw):
 SOURCES_COLUMNS = 8
 
 
-# ---------------------------------------------------------------- classifying
-
-# Kernel binaries are named linux-<flavour>-<part>-<version>, so the part that
-# says what kind of package it is can appear anywhere in the name (compare
-# linux-headers-6.8.0-31 with linux-aws-6.14-headers-6.14.0-1012).  Matched in
-# order; first hit wins.
-CLASSES = [
-    ("objects",        re.compile(r"(^|-)objects-")),
-    ("modules-extra",  re.compile(r"(^|-)modules-extra")),
-    ("modules",        re.compile(r"(^|-)modules(-|$)")),
-    ("image-unsigned", re.compile(r"(^|-)image-unsigned(-|$)")),
-    ("image",          re.compile(r"(^|-)image(-|$)")),
-    ("headers",        re.compile(r"(^|-)headers(-|$)")),
-    ("buildinfo",      re.compile(r"(^|-)buildinfo(-|$)")),
-    ("lib-rust",       re.compile(r"(^|-)lib-rust(-|$)")),
-    ("tools",          re.compile(r"(^|-)(cloud-)?tools(-|$)")),
-    ("source",         re.compile(r"(^|-)source(-|$)")),
-    ("doc",            re.compile(r"(^|-)doc(-|$)")),
-    ("udebs",          re.compile(r"(^|-)udebs(-|$)")),
-]
-
-OTHER = "_other"   # not a kernel package at all
-KERNEL_MISC = "misc"
-
-# Trailing kernel-version suffix on a source name, e.g. linux-hwe-6.11.
-VERSUFFIX = re.compile(r"-[0-9]+\.[0-9]+$")
-
-
-def classify(name):
-    for label, rx in CLASSES:
-        if rx.search(name):
-            return label
-    return KERNEL_MISC
-
-
-def flavour(src):
-    """Collapse a kernel source name to the kernel family it belongs to.
-
-    linux-signed-aws-6.11 and linux-restricted-modules-aws both become
-    linux-aws, so signed variants and restricted modules line up with the
-    kernel they are built against.
-    """
-    for prefix in ("linux-signed-", "linux-restricted-modules-"):
-        if src.startswith(prefix):
-            src = "linux-" + src[len(prefix):]
-            break
-    else:
-        if src == "linux-restricted-modules":
-            src = "linux"
-    return VERSUFFIX.sub("", src)
-
-
-def extract_kver(pkg):
-    """Kernel version out of linux-image[-unsigned]-<ver>, as kernel-sizes does."""
-    for prefix in ("linux-image-unsigned-", "linux-image-"):
-        if pkg.startswith(prefix):
-            rest = pkg[len(prefix):]
-            if re.match(r"[0-9]+\.", rest):
-                return rest
-    return None
-
-
-OBJECTS_PREFIX = "linux-objects-"
-
-
-def is_objects_for(name, kvers):
-    """True for linux-objects-<anything>-<kver>, for a kver we have seen.
-
-    The obvious spelling is a regex, ^linux-objects-.+-(kver1|kver2|...)$, but
-    the alternation ends up holding every kernel version in the snapshot: six
-    thousand branches and a 140 KB pattern for 2026-09, walked one branch at a
-    time for every package that clears the prefix.  Trying each "-" as the
-    split point and looking the tail up in the set instead is about twenty
-    times faster and matches exactly the same names, since the regex compared
-    those tails literally too.  The search starts at 1 because the ".+" needs
-    at least one character before the version.
-    """
-    if not name.startswith(OBJECTS_PREFIX):
-        return False
-    rest = name[len(OBJECTS_PREFIX):]
-    i = rest.find("-", 1)
-    while i != -1:
-        if rest[i + 1:] in kvers:
-            return True
-        i = rest.find("-", i + 1)
-    return False
-
-
 # ---------------------------------------------------------------- aggregating
 
-
-class Row:
-    __slots__ = ("ver", "arch", "size", "isize", "src", "prov", "mask",
-                 "component", "smask", "count")
-
-    def __init__(self, ver, arch, size, isize, src, prov, mask, component,
-                 smask=0, count=1):
-        # How many packages this row is: 0 for an upstream tarball, which is a
-        # file in the pool but part of a source package counted elsewhere.
-        self.count = count
-        self.smask = smask
-        self.ver = ver
-        self.arch = arch
-        self.size = size
-        self.isize = isize
-        self.src = src
-        self.prov = prov
-        self.mask = mask
-        self.component = component
+# Reading the blobs and turning a snapshot into its tables is done by
+# archive-aggregate, in aggregate/; see run_aggregator.  This is the label it
+# gives, in the class column, to a file the kernel rule does not claim -- the
+# page and `report` count every other class as kernel.
+OTHER = "_other"
 
 
-def load_slim(cache, sha, component, dir_arch, pocket_bit, into):
-    """Merge one cached index into the (pkg, ver, arch) -> Row map.
-
-    A package published to more than one pocket is one file in the pool, so it
-    is recorded once with a bitmask of every pocket it appears in.  Whichever
-    component we see first wins; components are walked in archive order so that
-    means main beats universe for the rare package that has moved.
-
-    The architecture a row is filed under is the *index directory's*, not the
-    Architecture field, with one exception.  Packages in binary-amd64v3 declare
-    "Architecture: amd64" while being a separate build at a separate pool path
-    (foo_1.0_amd64v3.deb beside foo_1.0_amd64.deb), so trusting the field would
-    key both to the same row and quietly drop one of the two files.  The
-    exception is Architecture: all, which really is one file listed in every
-    binary-<arch> directory, and has to collapse to a single "all" row rather
-    than being counted once per architecture.
-
-    A Sources row also names its upstream tarballs, and each becomes a row of
-    its own keyed by file name in place of a version, so that every version
-    sharing one finds the same row.  It counts as no package: the source
-    version that names it is already counted.
-    """
-    data = cache.get_blob(sha)
-    if not data:
-        return
-    for line in data.split(b"\n"):
-        if not line:
-            continue
-        fields = line.split(b"\t")
-        pkg, ver, arch, size, isize, src, prov = fields[:7]
-        if arch != b"all" and dir_arch is not None:
-            arch = dir_arch
-        key = (pkg, ver, arch)
-        row = into.get(key)
-        if row is None:
-            into[key] = Row(ver, arch.decode(), int(size), int(isize),
-                            src.decode(), prov == b"1", pocket_bit, component)
-        else:
-            row.mask |= pocket_bit
-            row.prov = row.prov or prov == b"1"
-        if arch != b"source":
-            continue
-        if len(fields) != SOURCES_COLUMNS:
-            raise RuntimeError("blob %s was slimmed before upstream tarballs "
-                               "were split out; it needs fetching again" % sha)
-        if not fields[7]:
-            continue
-        for item in fields[7].split(b","):
-            name, _, osize = item.rpartition(b":")
-            okey = (pkg, name, arch)
-            orow = into.get(okey)
-            if orow is None:
-                into[okey] = Row(name, "source", int(osize), 0, src.decode(),
-                                 False, pocket_bit, component, count=0)
-            else:
-                orow.mask |= pocket_bit
-
-
-def kernel_predicate(rows):
-    """Build the is-this-a-kernel test for one snapshot's worth of rows.
-
-    Kernel-ness follows kernel-sizes: every binary of a source that ships
-    something providing linux-image, plus any linux-objects-*-<kver> built for
-    a kernel version seen in those images.  Both halves need the whole snapshot
-    in hand before anything can be judged, which is why this is a factory
-    rather than a plain function.
-    """
-    kernel_sources = set()
-    kvers = set()
-    for (pkg, _ver, _arch), row in rows.items():
-        if row.prov:
-            kernel_sources.add(row.src)
-        kver = extract_kver(pkg.decode())
-        if kver is not None:
-            kvers.add(kver)
-
-    def is_kernel(name, src):
-        return src in kernel_sources or is_objects_for(name, kvers)
-
-    return is_kernel
-
-
-def count_index(cache, sha, is_kernel):
-    """(entries, kernel entries) in one cached index.
-
-    Counts stanzas the way the index lists them, not the way the pool stores
-    them: an Architecture: all package is a line in every binary-<arch> index
-    that carries it, and a package in two pockets is a line in each.  That is
-    the right unit for "how long is this list" and the wrong one for "how big
-    is the archive", which is what everything else here counts.
-    """
-    data = cache.get_blob(sha)
-    if not data:
-        return 0, 0
-    n = kn = 0
-    for line in data.split(b"\n"):
-        if not line:
-            continue
-        n += 1
-        fields = line.split(b"\t")
-        if is_kernel(fields[0].decode(), fields[5].decode()):
-            kn += 1
-    return n, kn
-
-
-def aggregate(rows, is_kernel_row=None):
-    """Turn one snapshot's worth of rows into the two output tables.
-
-    Takes the kernel test as an argument when the caller already has one:
-    building it walks every row in the snapshot, and there is no point doing
-    that twice.
-    """
-    if is_kernel_row is None:
-        is_kernel_row = kernel_predicate(rows)
-
-    by_class = defaultdict(lambda: [0, 0, 0])    # smask, arch, comp, mask, class
-    by_flavour = defaultdict(lambda: [0, 0, 0])  # the same, flavour for class
-
-    for (pkg, _ver, _arch), row in rows.items():
-        name = pkg.decode()
-        is_kernel = is_kernel_row(name, row.src)
-        if not is_kernel:
-            cls = OTHER
-        elif row.arch == "source":
-            cls = "srcpkg"
-        else:
-            cls = classify(name)
-        acc = by_class[(row.smask, row.arch, row.component, row.mask, cls)]
-        acc[0] += row.count
-        acc[1] += row.size
-        acc[2] += row.isize * 1024
-        if is_kernel:
-            acc = by_flavour[(row.smask, row.arch, row.component, row.mask,
-                              flavour(row.src))]
-            acc[0] += row.count
-            acc[1] += row.size
-            acc[2] += row.isize * 1024
-
-    return by_class, by_flavour
-
-
-# Bump when a change to aggregate() or the tables it builds would give a
+# Bump when a change to archive-aggregate or the tables it builds would give a
 # different answer for the same inputs, so that cached aggregates written by
 # the old logic are ignored rather than silently reused.  2 added the index
 # tally, which a version 1 entry has no rows for and would read back as empty.
@@ -1231,10 +1001,11 @@ class Builder:
                         break
         return wanted if found else None
 
-    def load_rows(self, snapshot, series):
-        """Fetch what is missing and return one (snapshot, series)'s rows.
+    def fetch(self, snapshot, series):
+        """Make sure every blob one (snapshot, series) needs is cached.
 
-        Returns None when the series does not exist at this snapshot.
+        Returns the plan, or None when the series does not exist at this
+        snapshot.  Reading the blobs is archive-aggregate's job, not this one's.
         """
         wanted = self.plan(snapshot, series)
         if wanted is None:
@@ -1252,40 +1023,65 @@ class Builder:
                     lambda item: self._ensure_blob(
                         snapshot, item[1][0], item[1][1], item[0], item[1][2]),
                     suite_of.items()))
+        return wanted
 
-        rows = {}
+    def job(self, planned):
+        """archive-aggregate's input for one snapshot: [(series, plan)] in.
+
+        Ubuntu has a single pool/ shared by every series, so the same package
+        version referenced by two series is one file on disk.  The aggregator
+        merges every series named here into one map, each row carrying a
+        bitmask of the series that reference it -- as of 2026-09 only 93
+        distinct masks occur out of the 4096 the twelve series of the day could
+        produce, because sharing follows patterns: most files belong to one
+        series, and the rest are mostly runs of consecutive ones.  That mask is
+        what lets the page take any set of series and count each file once,
+        exactly as the pocket mask does for pockets.
+
+        The order of the lines is part of the answer.  A pool file takes its
+        component and every other column from its first sighting, so the
+        indexes go series by series, then component in archive order -- which
+        is what makes main beat universe for the rare package that has moved --
+        then pocket, then plan order.
+        """
         bit = {p: 1 << i for i, p in enumerate(POCKETS)}
-        for component in self.components:
-            for pocket in self.pockets:
-                for ix in wanted:
-                    if ix.component == component and ix.pocket == pocket:
-                        load_slim(self.cache, ix.sha, component,
-                                  ix.arch.encode(), bit[pocket], rows)
-        return rows
+        lines = []
+        for series, plan in planned:
+            lines.append("series\t%s\t%d" % (series, series_bit(series)))
+            for component in self.components:
+                for pocket in self.pockets:
+                    for ix in plan:
+                        if ix.component == component and ix.pocket == pocket:
+                            lines.append("\t".join(map(str, [
+                                "ix", ix.component, ix.arch, ix.pocket,
+                                bit[pocket], ix.csize, ix.usize,
+                                self.cache.blob_path(ix.sha)])))
+        return "".join(line + "\n" for line in lines)
 
 
-def merge_rows(into, rows, series_bit):
-    """Fold one series' rows into a snapshot-wide (pkg, ver, arch) map.
+# The aggregator is Rust, in aggregate/, and has to be built before anything
+# here can aggregate: cargo build --release --manifest-path aggregate/Cargo.toml.
+# ARCHIVE_AGGREGATE points at a binary somewhere else.
+AGGREGATOR = os.environ.get("ARCHIVE_AGGREGATE") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "aggregate", "target", "release", "archive-aggregate")
 
-    Ubuntu has a single pool/ shared by every series, so the same package
-    version referenced by two series is one file on disk.  Each row therefore
-    carries a bitmask of every series that references it -- as of 2026-09 only
-    93 distinct masks occur out of the 4096 the twelve series of the day could
-    produce, because sharing follows patterns: most files belong to one
-    series, and the rest are mostly runs of consecutive ones.
 
-    That mask is what lets the page take any set of series and count each file
-    once, exactly as the pocket mask does for pockets.  Summing per-series
-    totals instead would count a shared file once per series that mentions it,
-    which for 2026-09 is 1.5 TiB, 16.6% of the archive.
-    """
-    for key, row in rows.items():
-        cur = into.get(key)
-        if cur is None:
-            into[key] = Row(row.ver, row.arch, row.size, row.isize, row.src,
-                            row.prov, row.mask, row.component, series_bit,
-                            row.count)
-        else:
-            cur.mask |= row.mask
-            cur.prov = cur.prov or row.prov
-            cur.smask |= series_bit
+class NoAggregator(Exception):
+    """archive-aggregate has not been built, or is not where it was said to be."""
+
+
+def run_aggregator(job, *args):
+    """Run archive-aggregate over a job and return what it printed."""
+    if not os.access(AGGREGATOR, os.X_OK):
+        raise NoAggregator(
+            "no aggregator at %s; build it with\n"
+            "  cargo build --release --manifest-path %s"
+            % (AGGREGATOR, os.path.join(os.path.dirname(
+                os.path.abspath(__file__)), "aggregate", "Cargo.toml")))
+    run = subprocess.run([AGGREGATOR, *args], input=job, capture_output=True,
+                         text=True)
+    if run.returncode != 0:
+        raise RuntimeError("archive-aggregate exited %d:\n%s"
+                           % (run.returncode, run.stderr.strip()))
+    return run.stdout
