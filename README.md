@@ -124,19 +124,24 @@ points per month.
 
 ## Using it
 
-Two packages, both in the Ubuntu archive. There is no virtualenv, no
-`package.json` and no `npm install` anywhere:
+Three packages, all in the Ubuntu archive, and one build. There is no
+virtualenv, no `package.json` and no `npm install` anywhere:
 
 ```console
-$ sudo apt install python3-requests nodejs
+$ sudo apt install python3-requests cargo nodejs
+$ cargo build --release --manifest-path aggregate/Cargo.toml
 ```
 
-`python3-requests` is the only thing outside the standard library that the tool
-itself uses. `nodejs` is for the tests in `tests/` and nothing else; the page
-they test has no dependencies at all, which is rather the point of it. Node 18
-or newer, because the page inflates its dataset with `DecompressionStream`,
-which became a global in 18 — on Ubuntu that means 24.04 or later, and the
-suites are run against the 22.x in 26.04.
+`python3-requests` is the only thing outside the standard library that the
+Python half uses. `cargo` builds the other half, the aggregator in
+`aggregate/`, which reads the cached indexes and does the counting; the build
+fetches its few crates from crates.io the first time, and any Rust from 1.85
+on will do, rustup's as well as the archive's. `nodejs` is for the tests in
+`tests/` and nothing else; the page they test has no dependencies at all,
+which is rather the point of it. Node 18 or newer, because the page inflates
+its dataset with `DecompressionStream`, which became a global in 18 — on
+Ubuntu that means 24.04 or later, and the suites are run against the 22.x in
+26.04.
 
 ```console
 $ ./archive-size-explorer build -o archive.html
@@ -271,6 +276,11 @@ losing those makes the next run slower, never wrong.
 The live blobs travel in the tarball rather than the cache because they
 cannot be fetched again: they are pinned to the archive as it was, and the
 archive does not keep superseded indexes.
+
+Each run builds the aggregator from the commit it is running rather than
+fetching a binary from anywhere. A cached aggregate is only right for the rules
+that wrote it, so the binary has to come from the same source as the cache key
+and `AGGREGATE_VERSION` it is filed under.
 
 What CI cannot do is anything that re-aggregates every snapshot — an
 `AGGREGATE_VERSION` bump, or `--refresh-live` — since that needs every blob
@@ -543,15 +553,16 @@ dropped is 48.9%.
 
 ## How it is put together
 
-`archive_sizes.py` does the work; `archive-size-explorer` is the CLI;
-`template.html` is the page, with the dataset spliced into it as a small JSON
-header plus one packed blob. The page is styled with
-[Vanilla](https://vanillaframework.io/), Canonical's CSS framework, and set in
-the Ubuntu font; both are in `vendor/` and inlined into the page by the build,
-so it still makes no network requests. `vendor/update` recompiles the CSS for
-a new Vanilla release. `tests/` holds the page's tests, which run its
-JavaScript under a stub DOM in node — the tab row, the URL round trip, and
-where the explanatory prose lives:
+`archive_sizes.py` fetches, caches and plans; `aggregate/` is the Rust that
+reads the cached indexes and counts them, a snapshot at a time;
+`archive-size-explorer` is the CLI; `template.html` is the page, with the
+dataset spliced into it as a small JSON header plus one packed blob. The page
+is styled with [Vanilla](https://vanillaframework.io/), Canonical's CSS
+framework, and set in the Ubuntu font; both are in `vendor/` and inlined into
+the page by the build, so it still makes no network requests. `vendor/update`
+recompiles the CSS for a new Vanilla release. `tests/` holds the page's tests,
+which run its JavaScript under a stub DOM in node — the tab row, the URL round
+trip, and where the explanatory prose lives:
 
 ```console
 $ ./tests/check page.html
@@ -563,6 +574,21 @@ url: 30 ok, 0 failed
 They want a built page rather than the template, since they run the page's own
 script over its own data. There is no test framework to install, only node —
 see [Using it](#using-it).
+
+The aggregator's test is the cache itself. `aggregate/verify` plans each
+snapshot in a window exactly as `build` would, reruns the aggregator over it
+and compares the result with the cached entry byte for byte, reading the cache
+and never writing it:
+
+```console
+$ aggregate/verify --from 2023-03
+...
+45 identical, 0 different, 0 skipped
+```
+
+So a change that should not move any number can be shown not to, over every
+snapshot the cache holds; and after one that should, its diff is the list of
+what moved.
 
 The blob is a column store: each table's columns are written out one after
 another as varints, with the key columns delta-encoded against the row above.
@@ -642,11 +668,10 @@ been looked at yet.
 `SEPARATE_SERIES` is a different lever, for a series that shares no pool file
 with any other: those are aggregated alone, under a cache key naming only
 themselves, and folded in afterwards, so adding or dropping one costs only its
-own aggregation — about 4 seconds a snapshot against 60 to 90 for a
-whole-snapshot redo. It is only sound when the series really is disjoint, since
-summing series that share pool files counts each shared file once per series
-that references it. The list is empty: the live archive is the better answer
-for the only series that qualified.
+own aggregation, a fraction of a whole-snapshot redo. It is only sound when the
+series really is disjoint, since summing series that share pool files counts
+each shared file once per series that references it. The list is empty: the
+live archive is the better answer for the only series that qualified.
 
 Since a snapshot has to be deduplicated across all of its series at once, it is
 also aggregated in one go, which means holding every series' rows for that
@@ -665,18 +690,20 @@ around 13x smaller than the `.xz` it came from and, more usefully, can be
 re-aggregated under different filters without going back to the network. A full
 snapshot of one series costs about 11 MiB of cache.
 
-Aggregating is cached too, a snapshot at a time, because it costs far more than
-the download does: 2.9 million rows have to be parsed out of those blobs and
-folded together to produce the six thousand rows one snapshot contributes to
-the page, and counting the index lists is a second pass over the same blobs on
-top of that. A snapshot timestamp names a fixed state of the archive, so that
-answer can never change, and the entry is about 110 KiB — three orders of
-magnitude smaller than the indexes behind it. The key covers the series list
-and the architecture, pocket and component filters, since all of those change
-what comes out. A run that could not read everything it wanted — an `--offline`
-miss — is never written, because from the outside it looks exactly like a
-series that does not exist yet. The practical effect is that adding this month
-to an existing page costs one snapshot's work rather than all of them.
+Aggregating is cached too, a snapshot at a time, because it needs every blob
+behind a snapshot rather than only the new ones, which a build without the
+whole cache — CI's — does not have: 2.9 million rows have to be parsed out of
+those blobs and folded together to produce the six thousand rows one snapshot
+contributes to the page, and counting the index lists is a second pass over the
+same blobs on top of that. A snapshot timestamp names a fixed state of the
+archive, so that answer can never change, and the entry is about 110 KiB —
+three orders of magnitude smaller than the indexes behind it. The key covers
+the series list and the architecture, pocket and component filters, since all
+of those change what comes out. A run that could not read everything it wanted
+— an `--offline` miss — is never written, because from the outside it looks
+exactly like a series that does not exist yet. The practical effect is that
+adding this month to an existing page costs one snapshot's work rather than all
+of them.
 
 The `Release` files are cached as `path -> (checksum, size)`. The size column
 is what the Package lists tab runs on, and it is the only record of it: a

@@ -144,16 +144,47 @@ cold build costs. The operational points:
   if the bits inside still mean what they meant, so preserve the existing
   assignments when you extend `SERIES_BITS`.
 
+## The aggregator
+
+`aggregate/` is Rust, and it is the only thing that turns cached blobs into
+numbers: `build`, `report` and `breakdown` all go through it. Python plans —
+Release lookups, fetching, the cache key, the live pin — and `Builder.job`
+writes the plan out as the binary's stdin.
+
+* **Build it first, and again after pulling**:
+  `cargo build --release --manifest-path aggregate/Cargo.toml`. A stale binary
+  is worse than a missing one, because it writes aggregates under today's key
+  with yesterday's rules and nothing notices. That is why CI builds it from
+  the commit it runs rather than fetching one.
+* **Run `aggregate/verify` after any change to it.** Every cached aggregate is
+  a test case, compared byte for byte, and the cache is only read. A change
+  meant to move nothing should leave every snapshot identical. One meant to
+  move numbers needs `AGGREGATE_VERSION` bumped, and the verify diff from
+  before the bump is the review of what moved.
+* **The job's line order is part of the answer.** A pool file takes its
+  component and every other column from its first sighting: series in order,
+  then component in archive order, then pocket, then plan order. The loader
+  shards packages across threads by name, which keeps that because every
+  shard walks every blob in the same order; anything parallelised another
+  way has to keep it too.
+* **Its output is the cache's format.** It prints exactly what
+  `Cache.put_aggregate` writes, sorted the way Python sorts the key tuples,
+  which is what lets `verify` compare text with text. Keep it that way.
+* **It holds every inflated blob of a snapshot at once**, a few GiB at the
+  newest snapshots. One snapshot at a time is fine on a small machine; several
+  in parallel are not.
+
 ## Long runs
 
 Timings, so that slow is not mistaken for hung. Off a warm cache a snapshot
 already aggregated comes back in about a second, so topping a page up to today
-costs one new snapshot's work: roughly two minutes and 130 MiB. What takes real
-time is something that invalidates every key at once — an `AGGREGATE_VERSION`
-bump, or `--refresh-live` — at fifteen minutes to redo the monthly window, a
-little over two hours for the weekly one, two and a half hours for both.
-Adding a series is no longer one of those: it re-aggregates only the snapshots
-that hold the series.
+costs one new snapshot's work, which is mostly its download: a couple of
+minutes. What takes real time is something that invalidates every key at once
+— an `AGGREGATE_VERSION` bump, or `--refresh-live` — and with the full cache
+that is now a couple of minutes for the monthly window and under ten for the
+weekly one, where the Python aggregator took a quarter of an hour and over two.
+Adding a series is not one of those: it re-aggregates only the snapshots that
+hold the series.
 
 Two ways to make a working build look broken:
 

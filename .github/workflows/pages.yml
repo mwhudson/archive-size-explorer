@@ -45,6 +45,22 @@ jobs:
 
       - run: pip install requests
 
+      # The aggregator, built from this commit rather than fetched from
+      # anywhere: a cached aggregate is only right for the rules that wrote
+      # it, so the binary has to come from the same source as the cache key
+      # and AGGREGATE_VERSION it is used with.  The runner image carries a
+      # Rust toolchain; this cache only saves the crates and the build.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            aggregate/target
+          key: cargo-${{ hashFiles('aggregate/Cargo.lock', 'aggregate/src/**') }}
+          restore-keys: cargo-
+
+      - run: cargo build --release --locked --manifest-path aggregate/Cargo.toml
+
       # Only what next week's new snapshot shares with this week's.  Losing
       # it costs a slower run, never a wrong one, so an evictable cache is
       # the right home for it.
