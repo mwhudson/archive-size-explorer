@@ -48,10 +48,13 @@ line per architecture.
 
 **Time window** narrows every tab to a stretch of the snapshots: drag the two
 thumbs to the first and last you want, and the charts redraw when you let go.
-The line charts' axes rescale to fit, the tables and the notes under the charts
-cover only that stretch, and the snapshot chooser offers only the snapshots
-inside it. A rate of change still measures back across the window's start, so
-narrowing the window does not cost a line its first few months.
+While you drag, each line chart fades what the new window would leave out and
+rules a line at each new end, so you can line the window up on the stretch you
+are after. The line charts' axes then rescale to fit, the tables and the notes
+under the charts cover only that stretch, and the snapshot chooser offers only
+the snapshots inside it. A rate of change still measures back across the
+window's start, so narrowing the window does not cost a line its first few
+months.
 
 The page opens with the series a mirror still has to carry ticked, and the ones
 moved off to old-releases.ubuntu.com left alone. **select default** on the
@@ -567,7 +570,7 @@ $ ./tests/check page.html
 notes: 55 ok, 0 failed
 tabs: 27 ok, 0 failed
 url: 50 ok, 0 failed
-window: 44 ok, 0 failed
+window: 51 ok, 0 failed
 ```
 
 They want a built page rather than the template, since they run the page's own

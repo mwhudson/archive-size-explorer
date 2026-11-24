@@ -45,6 +45,38 @@ suite(async ({page, check}) => {
   check("drag does not commit", T.state.from, 0);
   check("drag keeps the input", thumbs()[0] === lo, true);
 
+  // ...but every line chart shows where it would cut, on the left only, since
+  // the end has not moved.
+  const marks = svg => svg.querySelectorAll("[class=pending]")
+    .map(m => m.getAttribute("visibility"));
+  const charts = () => views().querySelectorAll("svg")
+    .filter(s => s.querySelectorAll("[class=pending]").length);
+  check("every line chart has marks", charts().length > 2, true);
+  check("drag marks the start on every chart",
+        charts().every(s => marks(s).join() === "visible,visible,hidden,hidden"),
+        true);
+  const shade = firstChart().querySelectorAll("[class=pending]")[0];
+  const edge = firstChart().querySelectorAll("[class=pending]")[1];
+  check("shade runs from the plot's edge to the rule",
+        +shade.getAttribute("x") + +shade.getAttribute("width"),
+        +edge.getAttribute("x1"));
+  const edgeAt = +edge.getAttribute("x1");
+  lo.value = 9;
+  lo.dispatch("input");
+  check("rule follows the drag", +edge.getAttribute("x1") > edgeAt, true);
+  hi.value = last - 4;
+  hi.dispatch("input");
+  check("dragging the end marks it too",
+        marks(firstChart()).join(), "visible,visible,visible,visible");
+  hi.value = last;
+  hi.dispatch("input");
+  lo.value = 0;
+  lo.dispatch("input");
+  check("back where it started, nothing is marked",
+        marks(firstChart()).join(), "hidden,hidden,hidden,hidden");
+  lo.value = 6;
+  lo.dispatch("input");
+
   // Letting go commits and redraws, and hands the keyboard back to the new
   // thumb so that the next arrow key still does something.
   lo.dispatch("change");
@@ -56,6 +88,14 @@ suite(async ({page, check}) => {
         short(D.snapshots[6]));
   check("chart still ends at the end", xLabels(firstChart()).slice(-1)[0],
         short(D.snapshots[last]));
+
+  // Dragged outwards, an end is off the chart and has nothing to mark.
+  thumbs()[0].value = 2;
+  thumbs()[0].dispatch("input");
+  check("widening marks nothing",
+        marks(firstChart()).join(), "hidden,hidden,hidden,hidden");
+  thumbs()[0].value = 6;
+  thumbs()[0].dispatch("input");
 
   // The thumbs cannot cross or meet: a window is at least two snapshots.
   const [lo2, hi2] = thumbs();

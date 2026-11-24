@@ -623,6 +623,11 @@ let zoomFound = false;
 // snapFollow but the chooser, so tabs without one keep their marks at the end.
 let snapMarks = [], snapFollow = false;
 
+// The same arrangement for the time window: a drag cannot re-render either,
+// so each line chart leaves a function that shades what the window being
+// dragged would leave out, and the window row calls them as it moves.
+let windowMarks = [];
+
 function setNames(sel, names) {
   return [...sel].sort((a, b) => a - b).map(i => names[i]).join(",");
 }
@@ -1268,6 +1273,43 @@ function lineChart(host, opts) {
   mark(snapFollow ? state.snap : hi);
   snapMarks.push(mark);
 
+  // The time window being dragged: page colour laid over what it would cut,
+  // so the lines there fade, and a rule at each new end in the slider's own
+  // fill colour, tying the marks to the control making them.  Only an end
+  // that has moved inwards has anywhere to go -- one dragged outwards is off
+  // the chart, and the stamps beside the slider are all that can say where.
+  const pending = [];
+  for (let k = 0; k < 2; k++) {
+    pending.push({
+      shade: el("rect", { y: pad.top, height: plotH, fill: "var(--page)",
+                          opacity: 0.7, visibility: "hidden",
+                          class: "pending" }, svg),
+      edge: el("line", { y1: pad.top, y2: pad.top + plotH,
+                         stroke: "var(--vf-color-link-default)",
+                         "stroke-width": 1.5, visibility: "hidden",
+                         class: "pending" }, svg),
+    });
+  }
+  const showWindow = (a, b) => {
+    const ends = [
+      // [shown, shade from, shade to, rule at]
+      a > lo ? [pad.left, X(a - lo), X(a - lo)] : null,
+      b < hi ? [X(b - lo), pad.left + plotW, X(b - lo)] : null,
+    ];
+    ends.forEach((e, k) => {
+      const p = pending[k];
+      const vis = e ? "visible" : "hidden";
+      p.shade.setAttribute("visibility", vis);
+      p.edge.setAttribute("visibility", vis);
+      if (!e) return;
+      p.shade.setAttribute("x", e[0]);
+      p.shade.setAttribute("width", Math.max(0, e[1] - e[0]));
+      p.edge.setAttribute("x1", e[2]);
+      p.edge.setAttribute("x2", e[2]);
+    });
+  };
+  windowMarks.push(showWindow);
+
   // crosshair + tooltip
   const hair = el("line", { y1: pad.top, y2: pad.top + plotH, stroke: "var(--axis)",
                             "stroke-width": 1, opacity: 0 }, svg);
@@ -1424,8 +1466,9 @@ let windowFocus = null;
  *  The charts follow when a thumb is let go rather than while it moves.  A
  *  drag cannot re-render, because render() rebuilds this row and would
  *  replace the input under the pointer, and redrawing every chart per step
- *  is too slow on the weekly page anyway; the stamps either side say where
- *  the drag has got to in the meantime.
+ *  is too slow on the weekly page anyway.  In the meantime the stamps either
+ *  side say where the drag has got to, and the line charts shade what it
+ *  would leave out (windowMarks).
  */
 function windowRow(host) {
   const last = D.snapshots.length - 1;
@@ -1468,13 +1511,20 @@ function windowRow(host) {
   };
   // Never fewer than two snapshots: a window of one is a single point, which
   // is what the snapshot chooser is for, and no line chart can draw it.
+  // A drag shows on the charts as it goes, without redrawing them.  Back
+  // where it started, the marks have nothing to shade and hide themselves.
+  const preview = () => {
+    for (const m of windowMarks) m(+lo.value, +hi.value);
+  };
   lo.addEventListener("input", () => {
     if (+lo.value >= +hi.value) lo.value = +hi.value - 1;
     paint();
+    preview();
   });
   hi.addEventListener("input", () => {
     if (+hi.value <= +lo.value) hi.value = +lo.value + 1;
     paint();
+    preview();
   });
   const commit = which => () => {
     // A chosen snapshot at the end of the window is taken to mean "the
@@ -2395,6 +2445,7 @@ function render() {
   zoomFound = false;
   snapMarks = [];
   snapFollow = false;
+  windowMarks = [];
   if (!state.series.size || !state.arch.size || !state.pocket.size || !state.comp.size) {
     host.innerHTML = '<div class="card"><div class="empty">' +
       "Select at least one of each filter.</div></div>";

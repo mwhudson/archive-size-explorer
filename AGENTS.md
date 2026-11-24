@@ -16,7 +16,7 @@ $ ./tests/check page.html
 notes: 55 ok, 0 failed
 tabs: 27 ok, 0 failed
 url: 50 ok, 0 failed
-window: 44 ok, 0 failed
+window: 51 ok, 0 failed
 ```
 
 `apt install nodejs` is the whole of the setup — there is no `package.json`,
