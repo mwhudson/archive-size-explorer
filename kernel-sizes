@@ -8,6 +8,10 @@
 # (e.g. linux-objects-nvidia-580-7.0.0-15-generic, sourced from
 # linux-restricted-modules). The sizes of those sources' tarballs/dsc/diffs
 # from the Sources index are also included.
+#
+# Vestigial: this is where the project started, and it is kept for reference
+# rather than maintained.  archive-size-explorer is the tool now, and its
+# kernel rule is expected to move on without this one following it.
 set -euo pipefail
 
 usage() {
