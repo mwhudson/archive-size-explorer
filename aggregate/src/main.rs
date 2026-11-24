@@ -23,13 +23,14 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::io::{self, BufRead, BufWriter, Read, Write};
 use std::time::Instant;
 
 use flate2::read::MultiGzDecoder;
 use rayon::prelude::*;
 use regex::Regex;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 
 // ---------------------------------------------------------------- the job
 
@@ -82,54 +83,27 @@ fn read_job(input: impl BufRead) -> Result<Vec<Series>, String> {
     Ok(out)
 }
 
-// ---------------------------------------------------------------- interning
-
-/// Small strings that recur millions of times -- sources, architectures,
-/// components -- as u32 ids, so a row is a handful of integers.
-#[derive(Default)]
-struct Interner {
-    ids: FxHashMap<Box<[u8]>, u32>,
-    names: Vec<Box<[u8]>>,
-}
-
-impl Interner {
-    fn id(&mut self, s: &[u8]) -> u32 {
-        if let Some(&id) = self.ids.get(s) {
-            return id;
-        }
-        let id = self.names.len() as u32;
-        self.names.push(s.into());
-        self.ids.insert(s.into(), id);
-        id
-    }
-
-    fn get(&self, s: &[u8]) -> Option<u32> {
-        self.ids.get(s).copied()
-    }
-
-    fn name(&self, id: u32) -> &str {
-        std::str::from_utf8(&self.names[id as usize]).expect("utf-8 name")
-    }
-}
-
 // ---------------------------------------------------------------- rows
 
-/// One file in the pool, as load_slim's Row.  Keyed by pkg\tver\tarch, which
-/// is the (pkg, ver, arch) tuple Python uses; a tab cannot occur in any of
-/// the three, since the slim format is itself tab-separated.
-struct Row {
+/// One file in the pool, as load_slim's Row.  Every string borrows from the
+/// inflated blobs or the job, which outlive the rows, so loading a snapshot
+/// allocates nothing per package.
+struct Row<'a> {
     size: u64,
     isize: u64,
-    src: u32,
-    arch: u32,
-    component: u32,
+    src: &'a [u8],
+    arch: &'a [u8],
+    component: &'a str,
     mask: u32,
     smask: u64,
     prov: bool,
     count: u64,
 }
 
-type Rows = FxHashMap<Box<[u8]>, Row>;
+/// (pkg, ver, arch), as in Python.  For an upstream tarball the file name
+/// stands in for the version.
+type Key<'a> = (&'a [u8], &'a [u8], &'a [u8]);
+type Rows<'a> = FxHashMap<Key<'a>, Row<'a>>;
 
 fn parse_u64(b: &[u8], what: &str) -> u64 {
     std::str::from_utf8(b)
@@ -138,108 +112,112 @@ fn parse_u64(b: &[u8], what: &str) -> u64 {
         .unwrap_or_else(|| panic!("bad {}: {:?}", what, String::from_utf8_lossy(b)))
 }
 
-/// load_slim, with the merge_rows half folded in: inserting into one
-/// snapshot-wide map with the series bit already set gives the same rows as
-/// building a per-series map and merging it, since in both the first sighting
-/// fixes every column and later ones only widen the masks.
-fn load_blob(
-    data: &[u8],
-    ix: &Ix,
-    series_bit: u64,
-    strings: &mut Interner,
-    rows: &mut Rows,
-) {
-    let component = strings.id(ix.component.as_bytes());
-    let dir_arch = ix.dir_arch.as_bytes();
-    let mut key: Vec<u8> = Vec::with_capacity(128);
-    for line in data.split(|&c| c == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        // At most eight columns, so a fixed array rather than a Vec per line.
-        let mut fields: [&[u8]; 8] = [b""; 8];
-        let mut nfields = 0;
-        for field in line.splitn(8, |&c| c == b'\t') {
-            fields[nfields] = field;
-            nfields += 1;
-        }
-        assert!(nfields >= 7, "short row in {}", ix.path);
-        let (pkg, ver, mut arch) = (fields[0], fields[1], fields[2]);
-        if arch != b"all" {
-            arch = dir_arch;
-        }
-        let prov = fields[6] == b"1";
-        key.clear();
-        key.extend_from_slice(pkg);
-        key.push(b'\t');
-        key.extend_from_slice(ver);
-        key.push(b'\t');
-        key.extend_from_slice(arch);
-        if let Some(row) = rows.get_mut(key.as_slice()) {
-            row.mask |= ix.pocket_bit;
-            row.prov = row.prov || prov;
-            row.smask |= series_bit;
-        } else {
-            let row = Row {
-                size: parse_u64(fields[3], "size"),
-                isize: parse_u64(fields[4], "installed size"),
-                src: strings.id(fields[5]),
-                arch: strings.id(arch),
-                component,
-                mask: ix.pocket_bit,
-                smask: series_bit,
-                prov,
-                count: 1,
-            };
-            rows.insert(key.as_slice().into(), row);
-        }
-        if arch != b"source" {
-            continue;
-        }
-        assert!(
-            nfields == 8,
-            "blob {} was slimmed before upstream tarballs were split out",
-            ix.path
-        );
-        if fields[7].is_empty() {
-            continue;
-        }
-        let src = strings.id(fields[5]);
-        let source = strings.id(b"source");
-        for item in fields[7].split(|&c| c == b',') {
-            let colon = item.iter().rposition(|&c| c == b':').unwrap_or(0);
-            let (name, osize) = (&item[..colon], &item[colon + 1..]);
-            key.clear();
-            key.extend_from_slice(pkg);
-            key.push(b'\t');
-            key.extend_from_slice(name);
-            key.extend_from_slice(b"\tsource");
-            if let Some(row) = rows.get_mut(key.as_slice()) {
-                row.mask |= ix.pocket_bit;
-                row.smask |= series_bit;
-            } else {
-                rows.insert(
-                    key.as_slice().into(),
-                    Row {
-                        size: parse_u64(osize, "tarball size"),
-                        isize: 0,
-                        src,
-                        arch: source,
-                        component,
-                        mask: ix.pocket_bit,
-                        smask: series_bit,
-                        prov: false,
-                        count: 0,
-                    },
-                );
+fn shard_of(pkg: &[u8], shards: usize) -> usize {
+    let mut h = FxBuildHasher.build_hasher();
+    pkg.hash(&mut h);
+    // The high bits: Fx mixes them best.
+    ((h.finish() >> 32) as usize) % shards
+}
+
+/// load_slim, with merge_rows folded in, for the packages of one shard.
+///
+/// Inserting into one snapshot-wide map with the series bit already set gives
+/// the same rows as building a per-series map and merging it: in both, the
+/// first sighting fixes every column and later ones only widen the masks.
+///
+/// A pool file's row depends only on the order of its own sightings, so the
+/// packages can be split between threads by name as long as each thread
+/// walks every blob in the original order.  An upstream tarball is keyed by
+/// its source's name, so it lands in the same shard as the source.
+fn load_shard<'a>(
+    job: &'a [Series],
+    blobs: &'a FxHashMap<&'a str, Vec<u8>>,
+    shard: usize,
+    shards: usize,
+    capacity: usize,
+) -> Rows<'a> {
+    let mut rows: Rows<'a> = FxHashMap::with_capacity_and_hasher(capacity, FxBuildHasher);
+    for series in job {
+        for ix in &series.ixs {
+            let data: &'a [u8] = &blobs[ix.path.as_str()];
+            let dir_arch = ix.dir_arch.as_bytes();
+            for line in data.split(|&c| c == b'\n') {
+                if line.is_empty() {
+                    continue;
+                }
+                let tab = line.iter().position(|&c| c == b'\t').unwrap_or(line.len());
+                if shard_of(&line[..tab], shards) != shard {
+                    continue;
+                }
+                load_line(line, ix, dir_arch, series.bit, &mut rows);
             }
         }
     }
+    rows
 }
 
-fn pkg_of(key: &[u8]) -> &[u8] {
-    let tab = key.iter().position(|&c| c == b'\t').unwrap();
-    &key[..tab]
+fn load_line<'a>(line: &'a [u8], ix: &'a Ix, dir_arch: &'a [u8], series_bit: u64,
+                 rows: &mut Rows<'a>) {
+    let mut fields: [&'a [u8]; 8] = [b""; 8];
+    let mut nfields = 0;
+    for field in line.splitn(8, |&c| c == b'\t') {
+        fields[nfields] = field;
+        nfields += 1;
+    }
+    assert!(nfields >= 7, "short row in {}", ix.path);
+    let (pkg, ver, mut arch) = (fields[0], fields[1], fields[2]);
+    if arch != b"all" {
+        arch = dir_arch;
+    }
+    let prov = fields[6] == b"1";
+    rows.entry((pkg, ver, arch))
+        .and_modify(|row| {
+            row.mask |= ix.pocket_bit;
+            row.prov = row.prov || prov;
+            row.smask |= series_bit;
+        })
+        .or_insert_with(|| Row {
+            size: parse_u64(fields[3], "size"),
+            isize: parse_u64(fields[4], "installed size"),
+            src: fields[5],
+            arch,
+            component: &ix.component,
+            mask: ix.pocket_bit,
+            smask: series_bit,
+            prov,
+            count: 1,
+        });
+    if arch != b"source" {
+        return;
+    }
+    assert!(
+        nfields == 8,
+        "blob {} was slimmed before upstream tarballs were split out",
+        ix.path
+    );
+    if fields[7].is_empty() {
+        return;
+    }
+    for item in fields[7].split(|&c| c == b',') {
+        let colon = item.iter().rposition(|&c| c == b':').unwrap_or(0);
+        let (name, osize) = (&item[..colon], &item[colon + 1..]);
+        rows.entry((pkg, name, b"source"))
+            .and_modify(|row| {
+                row.mask |= ix.pocket_bit;
+                row.smask |= series_bit;
+            })
+            .or_insert_with(|| Row {
+                size: parse_u64(osize, "tarball size"),
+                isize: 0,
+                src: fields[5],
+                arch: b"source",
+                component: &ix.component,
+                mask: ix.pocket_bit,
+                smask: series_bit,
+                prov: false,
+                count: 0,
+            });
+    }
 }
 
 // ---------------------------------------------------------------- kernels
@@ -259,25 +237,32 @@ fn extract_kver(pkg: &[u8]) -> Option<&[u8]> {
     None
 }
 
-struct Kernels {
-    sources: FxHashSet<u32>,
-    kvers: FxHashSet<Box<[u8]>>,
+#[derive(Default)]
+struct Kernels<'a> {
+    sources: FxHashSet<&'a [u8]>,
+    kvers: FxHashSet<&'a [u8]>,
 }
 
-impl Kernels {
-    /// kernel_predicate's two halves, from the whole snapshot.
-    fn new(rows: &Rows) -> Self {
-        let mut sources = FxHashSet::default();
-        let mut kvers = FxHashSet::default();
-        for (key, row) in rows {
+impl<'a> Kernels<'a> {
+    /// kernel_predicate's two halves.  Both need the whole snapshot, so each
+    /// shard contributes its part and the parts are unioned.
+    fn gather(rows: &Rows<'a>) -> Self {
+        let mut k = Kernels::default();
+        for (&(pkg, _, _), row) in rows {
             if row.prov {
-                sources.insert(row.src);
+                k.sources.insert(row.src);
             }
-            if let Some(kver) = extract_kver(pkg_of(key)) {
-                kvers.insert(kver.into());
+            if let Some(kver) = extract_kver(pkg) {
+                k.kvers.insert(kver);
             }
         }
-        Kernels { sources, kvers }
+        k
+    }
+
+    fn union(mut self, other: Self) -> Self {
+        self.sources.extend(other.sources);
+        self.kvers.extend(other.kvers);
+        self
     }
 
     /// is_objects_for: try each "-" after the first character as the split
@@ -291,8 +276,8 @@ impl Kernels {
             .any(|i| self.kvers.contains(&rest[i + 1..]))
     }
 
-    fn is_kernel(&self, name: &[u8], src: Option<u32>) -> bool {
-        src.is_some_and(|s| self.sources.contains(&s)) || self.is_objects(name)
+    fn is_kernel(&self, name: &[u8], src: &[u8]) -> bool {
+        self.sources.contains(src) || self.is_objects(name)
     }
 }
 
@@ -351,60 +336,56 @@ impl Classifier {
 // ---------------------------------------------------------------- tables
 
 type Acc = [u64; 3];
-type ClassKey = (u64, u32, u32, u32, u32);
+/// (smask, arch, component, pocket mask, label).  The flavour table is first
+/// built with the source in place of the flavour, since a flavour is a
+/// function of its source and summing by source first is the same sum.
+type ClassKey<'a> = (u64, &'a [u8], &'a str, u32, &'a [u8]);
+type Table<'a> = FxHashMap<ClassKey<'a>, Acc>;
 
-fn aggregate(
-    rows: &Rows,
-    kernels: &Kernels,
-    strings: &mut Interner,
-) -> (FxHashMap<ClassKey, Acc>, FxHashMap<ClassKey, Acc>) {
-    let classifier = Classifier::new();
-    let other = strings.id(b"_other");
-    let srcpkg = strings.id(b"srcpkg");
-    let source = strings.get(b"source");
-    let mut flavours: FxHashMap<u32, u32> = FxHashMap::default();
-    let mut by_class: FxHashMap<ClassKey, Acc> = FxHashMap::default();
-    let mut by_flavour: FxHashMap<ClassKey, Acc> = FxHashMap::default();
-    for (key, row) in rows {
-        let name = pkg_of(key);
-        let kernel = kernels.is_kernel(name, Some(row.src));
-        let cls = if !kernel {
-            other
-        } else if Some(row.arch) == source {
-            srcpkg
+fn add(acc: &mut Acc, row: &Row) {
+    acc[0] += row.count;
+    acc[1] += row.size;
+    acc[2] += row.isize * 1024;
+}
+
+fn aggregate<'a>(rows: &Rows<'a>, kernels: &Kernels, classifier: &Classifier)
+                 -> (Table<'a>, Table<'a>) {
+    let mut by_class = Table::default();
+    let mut by_source = Table::default();
+    for (&(pkg, _, _), row) in rows {
+        let kernel = kernels.is_kernel(pkg, row.src);
+        let cls: &'static str = if !kernel {
+            "_other"
+        } else if row.arch == b"source" {
+            "srcpkg"
         } else {
-            let label = classifier.classify(std::str::from_utf8(name).unwrap());
-            strings.id(label.as_bytes())
-        };
-        let add = |acc: &mut Acc| {
-            acc[0] += row.count;
-            acc[1] += row.size;
-            acc[2] += row.isize * 1024;
+            classifier.classify(std::str::from_utf8(pkg).expect("utf-8 name"))
         };
         add(by_class
-            .entry((row.smask, row.arch, row.component, row.mask, cls))
-            .or_default());
+            .entry((row.smask, row.arch, row.component, row.mask, cls.as_bytes()))
+            .or_default(), row);
         if kernel {
-            let flav = match flavours.get(&row.src) {
-                Some(&f) => f,
-                None => {
-                    let f = classifier.flavour(strings.name(row.src));
-                    let f = strings.id(f.as_bytes());
-                    flavours.insert(row.src, f);
-                    f
-                }
-            };
-            add(by_flavour
-                .entry((row.smask, row.arch, row.component, row.mask, flav))
-                .or_default());
+            add(by_source
+                .entry((row.smask, row.arch, row.component, row.mask, row.src))
+                .or_default(), row);
         }
     }
-    (by_class, by_flavour)
+    (by_class, by_source)
+}
+
+fn merge<'a>(mut a: Table<'a>, b: Table<'a>) -> Table<'a> {
+    for (k, v) in b {
+        let acc = a.entry(k).or_default();
+        for i in 0..3 {
+            acc[i] += v[i];
+        }
+    }
+    a
 }
 
 /// count_index: stanzas in one index and how many are kernels, counted the
 /// way the list publishes them rather than the way the pool stores them.
-fn count_index(data: &[u8], kernels: &Kernels, strings: &Interner) -> (u64, u64) {
+fn count_index(data: &[u8], kernels: &Kernels) -> (u64, u64) {
     let (mut n, mut kn) = (0, 0);
     for line in data.split(|&c| c == b'\n') {
         if line.is_empty() {
@@ -414,7 +395,7 @@ fn count_index(data: &[u8], kernels: &Kernels, strings: &Interner) -> (u64, u64)
         let mut fields = line.split(|&c| c == b'\t');
         let name = fields.next().unwrap();
         let src = fields.nth(4).expect("short row");
-        if kernels.is_kernel(name, strings.get(src)) {
+        if kernels.is_kernel(name, src) {
             kn += 1;
         }
     }
@@ -432,6 +413,10 @@ fn inflate(path: &str) -> Vec<u8> {
     out
 }
 
+fn utf8(b: &[u8]) -> &str {
+    std::str::from_utf8(b).expect("utf-8")
+}
+
 fn main() {
     let started = Instant::now();
     let job = match read_job(io::stdin().lock()) {
@@ -443,8 +428,9 @@ fn main() {
     };
 
     // Inflate every distinct blob up front, in parallel.  Holding them all is
-    // a few hundred MiB for a whole snapshot, and it lets the index tally
-    // reuse them instead of inflating everything a second time as Python does.
+    // a few hundred MiB for a whole snapshot; the rows borrow from them, and
+    // the index tally reuses them instead of inflating everything a second
+    // time as Python does.
     let mut paths: Vec<&str> = job
         .iter()
         .flat_map(|s| s.ixs.iter().map(|ix| ix.path.as_str()))
@@ -455,31 +441,50 @@ fn main() {
         paths.par_iter().map(|&p| (p, inflate(p))).collect();
     let inflated = started.elapsed();
 
-    // Sized for every line in every blob, which bounds the number of distinct
-    // pool files from above; growing a map of millions as it fills means
-    // rehashing all of it several times over.
+    // A shard per thread.  Each scans every blob but only parses and hashes
+    // its own packages, and the line count bounds how big its map can get.
+    let shards = rayon::current_num_threads();
     let lines: usize = blobs
         .par_iter()
         .map(|(_, b)| b.iter().filter(|&&c| c == b'\n').count() + 1)
         .sum();
-    let mut strings = Interner::default();
-    let mut rows: Rows = FxHashMap::with_capacity_and_hasher(lines, Default::default());
-    for series in &job {
-        for ix in &series.ixs {
-            load_blob(&blobs[ix.path.as_str()], ix, series.bit, &mut strings, &mut rows);
-        }
-    }
+    let parts: Vec<Rows> = (0..shards)
+        .into_par_iter()
+        .map(|s| load_shard(&job, &blobs, s, shards, lines / shards))
+        .collect();
+    let nrows: usize = parts.iter().map(|p| p.len()).sum();
     let loaded = started.elapsed();
 
-    let kernels = Kernels::new(&rows);
-    let (by_class, by_flavour) = aggregate(&rows, &kernels, &mut strings);
+    let kernels = parts
+        .par_iter()
+        .map(Kernels::gather)
+        .reduce(Kernels::default, Kernels::union);
+    let classifier = Classifier::new();
+    let (by_class, by_source) = parts
+        .par_iter()
+        .map(|rows| aggregate(rows, &kernels, &classifier))
+        .reduce(
+            || (Table::default(), Table::default()),
+            |(c1, s1), (c2, s2)| (merge(c1, c2), merge(s1, s2)),
+        );
+    let mut flavour_of: FxHashMap<&[u8], String> = FxHashMap::default();
+    let mut by_flavour: FxHashMap<(u64, &[u8], &str, u32, String), Acc> = FxHashMap::default();
+    for ((smask, arch, comp, mask, src), v) in by_source {
+        let flav = flavour_of
+            .entry(src)
+            .or_insert_with(|| classifier.flavour(utf8(src)))
+            .clone();
+        let acc = by_flavour.entry((smask, arch, comp, mask, flav)).or_default();
+        for i in 0..3 {
+            acc[i] += v[i];
+        }
+    }
     let aggregated = started.elapsed();
-    let nrows = rows.len();
-    drop(rows);
+    drop(parts);
 
     let tallies: FxHashMap<&str, (u64, u64)> = paths
         .par_iter()
-        .map(|&p| (p, count_index(&blobs[p], &kernels, &strings)))
+        .map(|&p| (p, count_index(&blobs[p], &kernels)))
         .collect();
     let mut by_index: BTreeMap<(&str, &str, &str, &str), [u64; 4]> = BTreeMap::new();
     for series in &job {
@@ -499,36 +504,24 @@ fn main() {
     // Cache.put_aggregate's text, sorted the way Python sorts the key tuples:
     // integers numerically, strings by code point, which for UTF-8 is the
     // same as by byte.
-    let named = |t: &FxHashMap<ClassKey, Acc>| {
-        let mut v: Vec<_> = t
-            .iter()
-            .map(|(&(smask, arch, comp, mask, label), acc)| {
-                ((smask, strings.name(arch), strings.name(comp), mask, strings.name(label)), *acc)
-            })
-            .collect();
-        v.sort_unstable();
-        v
-    };
     let mut out = BufWriter::new(io::stdout().lock());
     let names: Vec<&str> = job.iter().map(|s| s.name.as_str()).collect();
     writeln!(out, "s\t{}", names.join(" ")).unwrap();
-    for (tag, table) in [("c", &by_class), ("f", &by_flavour)] {
-        for ((smask, arch, comp, mask, label), acc) in named(table) {
-            writeln!(
-                out,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                tag, smask, arch, comp, mask, label, acc[0], acc[1], acc[2]
-            )
-            .unwrap();
-        }
+    let mut classes: Vec<_> = by_class.into_iter().collect();
+    classes.sort_unstable();
+    for ((smask, arch, comp, mask, label), acc) in classes {
+        writeln!(out, "c\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                 smask, utf8(arch), comp, mask, utf8(label), acc[0], acc[1], acc[2]).unwrap();
+    }
+    let mut flavours: Vec<_> = by_flavour.into_iter().collect();
+    flavours.sort_unstable();
+    for ((smask, arch, comp, mask, flav), acc) in flavours {
+        writeln!(out, "f\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                 smask, utf8(arch), comp, mask, flav, acc[0], acc[1], acc[2]).unwrap();
     }
     for ((series, pocket, comp, arch), acc) in &by_index {
-        writeln!(
-            out,
-            "i\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            series, pocket, comp, arch, acc[0], acc[1], acc[2], acc[3]
-        )
-        .unwrap();
+        writeln!(out, "i\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                 series, pocket, comp, arch, acc[0], acc[1], acc[2], acc[3]).unwrap();
     }
     out.flush().unwrap();
 
