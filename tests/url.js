@@ -71,12 +71,22 @@ suite(async ({page, check}) => {
   T.state.groups.add(T.BUCKETS.indexOf("cuda"));
   T.state.groups.add(T.BUCKETS.indexOf("rocm"));
   const g = T.encodeState();
-  check("groups by name", g, "g=cuda,rocm");
+  check("groups by name", g, "g=archive,cuda,rocm");
   clean(T);
-  check("Reset restores kernel", [...T.state.groups].map(b => T.BUCKETS[b]),
-        ["kernel"]);
+  check("Reset restores kernel and the whole archive",
+        [[...T.state.groups].map(b => T.BUCKETS[b]), T.state.whole],
+        [["kernel"], true]);
   T.applyHash("#" + g + ",nosuchgroup");
   check("groups round-trip, unknown one ignored", T.encodeState(), g);
+  // Without the whole archive's chip a link leaves it out, and one that
+  // names no group at all still applies.
+  clean(T);
+  T.applyHash("#g=cuda");
+  check("whole archive off", [T.state.whole, T.encodeState()], [false, "g=cuda"]);
+  clean(T);
+  T.applyHash("#g=archive");
+  check("whole archive alone", [T.state.whole, T.state.groups.size, T.encodeState()],
+        [true, 0, "g=archive"]);
 
   // An unknown series name is ignored rather than fatal.
   clean(T);

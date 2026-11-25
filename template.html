@@ -503,6 +503,9 @@ const archColour = k => archSlots.colour(k);
 const seriesSwatch = k => seriesSlots.swatch(k);
 const archSwatch = k => archSlots.swatch(k);
 const groupSwatch = k => bucketSlots.swatch(k);
+// The whole archive is the reference the groups are read against rather than
+// one of them, so it is drawn in the axis colour and takes no hue.
+const WHOLE_COLOUR = "var(--muted)";
 
 function assignSlots() {
   seriesSlots.assign(state.series);
@@ -519,7 +522,7 @@ function split() {
              label: "architecture" };
   }
   if (state.splitBy === "group") {
-    return { key: "group", names: BUCKETS, sel: state.groups, slots: bucketSlots,
+    return { key: "group", names: BUCKETS, sel: selGroups(), slots: bucketSlots,
              label: "package group" };
   }
   return { key: "series", names: D.series, sel: state.series, slots: seriesSlots,
@@ -544,9 +547,30 @@ function shareAxis(lines) {
   };
 }
 
+// The Groups row's first chip is the whole archive, which is not a group:
+// every file is in one of the others.  Its name in a link, and in the row.
+const WHOLE = "archive", WHOLE_LABEL = "whole archive";
+const EVERY_GROUP = new Set(BUCKETS.map((_, i) => i));
+
+/** The groups a summed figure covers: the ones picked, or with none picked
+ *  -- only the whole archive -- all of them, which is what it is made of. */
+function selGroups() {
+  return state.groups.size ? state.groups : EVERY_GROUP;
+}
+
+/** The Groups row's selection as chipRow sees it: the whole archive at 0,
+ *  then the groups one along. */
+const groupChips = {
+  has: i => (i === 0 ? state.whole : state.groups.has(i - 1)),
+  add: i => { if (i === 0) state.whole = true; else state.groups.add(i - 1); },
+  delete: i => { if (i === 0) state.whole = false; else state.groups.delete(i - 1); },
+  clear: () => { state.whole = false; state.groups.clear(); },
+  get size() { return state.groups.size + (state.whole ? 1 : 0); },
+};
+
 /** What the selected groups are called in a title, a tile or a sentence. */
 function groupLabel() {
-  const sel = [...state.groups].sort((a, b) => a - b);
+  const sel = [...selGroups()].sort((a, b) => a - b);
   if (sel.length === BUCKETS.length) return "every group";
   if (sel.length <= 2) return sel.map(b => BUCKETS[b]).join(" and ");
   return sel.length + " groups";
@@ -616,6 +640,10 @@ const DEFAULTS = {
   // What is measured against the archive.  Kernel, because that is the
   // question the page was built to answer and old links still mean it.
   groups: new Set(KERNEL_BUCKET >= 0 ? [KERNEL_BUCKET] : []),
+  // Whether the whole archive is drawn as a line beside them.  It is the
+  // denominator either way; leaving it out is so that two small groups can
+  // be compared on an axis that fits them.
+  whole: true,
   metric: "size",
   splitBy: "series",
   shown: "total",
@@ -640,6 +668,7 @@ const state = {
   pocket: new Set(DEFAULTS.pocket),
   comp: new Set(DEFAULTS.comp),
   groups: new Set(DEFAULTS.groups),
+  whole: DEFAULTS.whole,
   metric: DEFAULTS.metric,
   splitBy: DEFAULTS.splitBy,
   shown: DEFAULTS.shown,
@@ -711,8 +740,10 @@ function encodeState() {
     set("p", setNames(state.pocket, DATA.pockets));
   if (!sameSet(state.comp, DEFAULTS.comp))
     set("c", setNames(state.comp, D.components));
-  if (!sameSet(state.groups, DEFAULTS.groups))
-    set("g", setNames(state.groups, BUCKETS));
+  if (!sameSet(state.groups, DEFAULTS.groups) || state.whole !== DEFAULTS.whole) {
+    set("g", (state.whole ? [WHOLE] : []).concat(
+      [...state.groups].sort((a, b) => a - b).map(b => BUCKETS[b])).join(","));
+  }
   if (state.metric !== DEFAULTS.metric) set("m", state.metric);
   if (state.splitBy !== DEFAULTS.splitBy) set("l", state.splitBy);
   if (state.shown !== DEFAULTS.shown) set("d", state.shown);
@@ -752,7 +783,10 @@ function applyHash(hash) {
   if (got.has("a")) setTo(state.arch, namesToSet(got.get("a"), D.arches));
   if (got.has("p")) setTo(state.pocket, namesToSet(got.get("p"), DATA.pockets));
   if (got.has("c")) setTo(state.comp, namesToSet(got.get("c"), D.components));
-  if (got.has("g")) setTo(state.groups, namesToSet(got.get("g"), BUCKETS));
+  if (got.has("g")) {
+    setTo(state.groups, namesToSet(got.get("g"), BUCKETS));
+    state.whole = got.get("g").split(",").includes(WHOLE);
+  }
   if (["size", "isize"].includes(got.get("m"))) state.metric = got.get("m");
   if (["series", "arch", "group"].includes(got.get("l"))) state.splitBy = got.get("l");
   if (["total", "log", "rate"].includes(got.get("d"))) state.shown = got.get("d");
@@ -835,6 +869,7 @@ function resetDefaults() {
   setTo(state.pocket, DEFAULTS.pocket);
   setTo(state.comp, DEFAULTS.comp);
   setTo(state.groups, DEFAULTS.groups);
+  state.whole = DEFAULTS.whole;
   state.metric = DEFAULTS.metric;
   state.splitBy = DEFAULTS.splitBy;
   state.shown = DEFAULTS.shown;
@@ -1039,12 +1074,12 @@ function suiteSplit() {
 
 /** kernel/total bytes at one snapshot, deduplicated across the selection. */
 function snapshotTotals(snap) {
-  const cur = { sel: 0, total: 0, n: 0, sn: 0 };
+  const cur = { sel: 0, total: 0, n: 0, sn: 0 }, want = selGroups();
   scanGroups((s, smask, arch, b, n, v) => {
     if (s !== snap) return;
     cur.total += v;
     cur.n += n;
-    if (state.groups.has(b)) { cur.sel += v; cur.sn += n; }
+    if (want.has(b)) { cur.sel += v; cur.sn += n; }
   });
   return cur;
 }
@@ -1068,7 +1103,7 @@ function snapshotTotals(snap) {
     whatever is selected, because kernels are all its index table can count.
  */
 function timeline(groups) {
-  const sp = split(), want = groups || state.groups;
+  const sp = split(), want = groups || selGroups();
   const perKey = new Map();
   const blank = () => ({ sel: 0, total: 0, n: 0, sn: 0 });
   const totals = D.snapshots.map(blank);
@@ -1718,6 +1753,7 @@ function filterSummary() {
     state.groups.size > 2 && state.groups.size < BUCKETS.length
       ? dim(state.groups, BUCKETS, "groups") : groupLabel(),
   ];
+  if (!state.whole) bits.push("no whole-archive line");
   if (state.from !== DEFAULTS.from || state.to !== DEFAULTS.to) {
     bits.push(stamp(D.snapshots[state.from]) + " to " +
               stamp(D.snapshots[state.to]));
@@ -1766,11 +1802,16 @@ function buildFilters() {
                            i => archSwatch(i)));
   host.appendChild(chipRow("Pocket", DATA.pockets, state.pocket, toggler(state.pocket)));
   host.appendChild(chipRow("Component", D.components, state.comp, toggler(state.comp)));
-  host.appendChild(chipRow("Groups", BUCKETS, state.groups, toggler(state.groups),
-                           i => groupSwatch(i),
+  host.appendChild(chipRow("Groups", [WHOLE_LABEL].concat(BUCKETS), groupChips,
+                           toggler(groupChips),
+                           i => (i === 0 ? WHOLE_COLOUR : groupSwatch(i - 1)),
                            [["select default",
-                             "kernel only, which is what the page opens with",
-                             () => setTo(state.groups, DEFAULTS.groups)]]));
+                             "the whole archive and kernel, which is what " +
+                             "the page opens with",
+                             () => {
+                               setTo(state.groups, DEFAULTS.groups);
+                               state.whole = DEFAULTS.whole;
+                             }]]));
   windowRow(host);
 
   host.appendChild(pickRow("Measure", [["size", "Download size"],
@@ -1958,10 +1999,10 @@ function viewTable(host, tl) {
   const c2 = card(host, "One snapshot in full",
     "The bytes behind the charts, at " + at + ". Selected is " + what + ".",
     "snapshot-table");
-  const rows = new Map();
+  const rows = new Map(), want = selGroups();
   scanGroups((s, smask, arch, b, n, v) => {
     if (s !== state.snap) return;
-    const mine = state.groups.has(b);
+    const mine = want.has(b);
     for (const ser of state.series) {
       if (!(smask >> ser & 1)) continue;
       const key = D.series[ser] + " " + D.arches[arch];
@@ -2088,24 +2129,35 @@ function viewArchive(host) {
   const xs = D.snapshots.map(shortStamp);
   const all = state.series.size === D.series.length;
   const what = groupLabel();
+  // One line per group picked, not their sum, so that groups can be compared
+  // with each other; the sums are in the tiles and the notes.  The whole
+  // archive is a line only when its chip is on, and without it the axis fits
+  // the groups.
+  const g = groupTimeline();
+  const picked = bucketSlots.drawable(state.groups);
+  const groupLines = pick => picked.map(b => ({
+    name: BUCKETS[b], colour: bucketSlots.colour(b), dash: bucketSlots.dash(b),
+    points: g.per[b].map((c, i) => (g.totals[i].v ? pick(c, g.totals[i]) : null)),
+  }));
+  const keys = ls => ls.map(l => [l.name, l.colour, l.dash]);
 
-  const sizeCard = card(host, "Total size of the archive",
+  const sizeCard = card(host, state.whole ? "Total size of the archive"
+                                          : "Size of each group picked",
     (all ? "Every package published across all " + D.series.length + " series"
          : "Every package published across the " + state.series.size +
            " selected series") +
     ", with each file in pool/ counted once however many of them reference it.", "archive-size");
+  const sizeLines = (state.whole ? [{
+    name: WHOLE_LABEL, colour: WHOLE_COLOUR,
+    points: tl.totals.map(c => (c && c.total ? c.total : null)),
+  }] : []).concat(groupLines(c => c.v));
   lineChart(sizeCard, {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
     fmt: bytes,
-    series: [
-      { name: "whole archive", colour: "var(--s1)",
-        points: tl.totals.map(c => (c && c.total ? c.total : null)) },
-      { name: what, colour: "var(--s2)",
-        points: tl.totals.map(c => (c && c.total ? c.sel : null)) },
-    ],
+    series: sizeLines,
   });
-  legend(sizeCard, [["whole archive", "var(--s1)"], [what, "var(--s2)"]]);
+  legend(sizeCard, keys(sizeLines));
   const sign = growth >= 0 ? "+" : "-";
   const rate = years >= 1
     ? ", " + sign + bytes(Math.abs(growth) / years) + " a year"
@@ -2115,9 +2167,11 @@ function viewArchive(host) {
     bytes(last.total) + " at " + stamp(D.snapshots[lastIdx]) + ": " +
     sign + bytes(Math.abs(growth)) + " over " +
     (years >= 1 ? years.toFixed(1) + " years" : Math.round(years * 12) + " months") +
-    rate + ", and " + what + " went from " +
-    pct(first.total ? first.sel / first.total : 0) + " of it to " +
-    pct(last.total ? last.sel / last.total : 0) + ".");
+    rate + (state.groups.size
+      ? ", and " + what + " went from " +
+        pct(first.total ? first.sel / first.total : 0) + " of it to " +
+        pct(last.total ? last.sel / last.total : 0)
+      : "") + ".");
 
   const splitCard = card(host, "Archive size, per " + tl.split.label,
     tl.split.key === "arch"
@@ -2130,20 +2184,25 @@ function viewArchive(host) {
       : "One line per series. A file two series share is counted in both, so " +
         "these add up to more than the line above.", "archive-size-by-split");
   // A group's cell carries the whole archive as its total; see timeline().
-  const sizeLines = splitLines(tl, tl.split.key === "group" ? c => c.sel : c => c.total);
+  const splitSize = splitLines(tl, tl.split.key === "group" ? c => c.sel : c => c.total);
   lineChart(splitCard, {
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
     fmt: bytes,
-    series: sizeLines.series,
+    series: splitSize.series,
   });
-  legend(splitCard, sizeLines.series.map(l => [l.name, l.colour, l.dash]));
+  legend(splitCard, keys(splitSize.series));
 
-  const shareCard = card(host, capital(what) + " share of the whole archive",
-    "The two lines from the first chart as a ratio.", "archive-share");
-  const shareLine = [{ name: what + " share", colour: "var(--s1)",
-                       points: tl.totals.map(
-                         c => (c && c.total ? 100 * c.sel / c.total : null)) }];
+  const shareCard = card(host, state.groups.size > 1
+      ? "Share of the whole archive, per group"
+      : capital(what) + " share of the whole archive",
+    state.groups.size > 1
+      ? "Each group picked, as a share of everything selected."
+      : "The two lines from the first chart as a ratio.", "archive-share");
+  const shareLine = state.groups.size ? groupLines((c, t) => 100 * c.v / t.v) : [{
+    name: what + " share", colour: "var(--s1)",
+    points: tl.totals.map(c => (c && c.total ? 100 * c.sel / c.total : null)),
+  }];
   lineChart(shareCard, Object.assign({
     x: xs,
     xTitle: i => stamp(D.snapshots[i]),
@@ -2152,16 +2211,17 @@ function viewArchive(host) {
     height: 240,
     series: shareLine,
   }, shareAxis(shareLine)));
+  legend(shareCard, keys(shareLine));
 
   snapshotChooser(host, body => {
     const at = stamp(D.snapshots[state.snap]);
-    const byArch = new Map();
+    const byArch = new Map(), want = selGroups();
     scanGroups((snap, smask, arch, b, n, v) => {
       if (snap !== state.snap) return;
       let a = byArch.get(arch);
       if (!a) byArch.set(arch, a = { sel: 0, total: 0, n: 0 });
       a.total += v;
-      if (state.groups.has(b)) { a.sel += v; a.n += n; }
+      if (want.has(b)) { a.sel += v; a.n += n; }
     });
     const c = card(body, "The archive by architecture",
       "At " + at + ". Solid bar: " + what + ".", "archive-by-arch");
@@ -2641,7 +2701,7 @@ function render() {
   snapFollow = false;
   windowMarks = [];
   if (!state.series.size || !state.arch.size || !state.pocket.size ||
-      !state.comp.size || !state.groups.size) {
+      !state.comp.size || !groupChips.size) {
     host.innerHTML = '<div class="card"><div class="empty">' +
       "Select at least one of each filter.</div></div>";
     syncHash();

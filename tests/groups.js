@@ -92,7 +92,7 @@ suite(async ({page, check}) => {
   const views = T.S.document.getElementById("views");
   check("has a reading under the share chart",
         /the biggest gains in share were/.test(views.textContent), true);
-  check("URL for the split", T.encodeState(), "v=time&g=kernel,firmware,cuda&l=group");
+  check("URL for the split", T.encodeState(), "v=time&g=archive,kernel,firmware,cuda&l=group");
 
   // The groups table on Tables names every group, selected or not, and dates
   // both of its share columns.
@@ -118,6 +118,43 @@ suite(async ({page, check}) => {
          T.S.document.getElementById("tile-share-label").textContent],
         ["CUDA", "CUDA SHARE"]);
   check("and the summary line", /and cuda went from/.test(views.textContent), true);
+  T.resetDefaults();
+
+  // The Archive size charts draw each group picked rather than their sum, so
+  // that two can be compared, and the whole archive only with its chip on --
+  // without it the axis fits the groups.
+  const legendOf = key => {
+    T.state.view = "archive";
+    T.state.zoom = key;
+    T.render();
+    return views.querySelectorAll(".item").map(i => i.textContent);
+  };
+  const topTick = () => Math.max(...views.querySelectorAll("text")
+    .map(t => t.textContent).filter(t => /iB$/.test(t)).map(t => parseFloat(t) *
+      ({KiB: 1, MiB: 1024, GiB: 1024 ** 2, TiB: 1024 ** 3})[t.split(" ").pop()]));
+  check("opens on the whole archive and kernel", legendOf("archive-size"),
+        ["whole archive", "kernel"]);
+  const withWhole = topTick();
+  T.state.groups.clear();
+  T.state.groups.add(B("cuda"));
+  T.state.groups.add(B("firmware"));
+  check("a line per group", legendOf("archive-size"),
+        ["whole archive", "firmware", "cuda"]);
+  T.state.whole = false;
+  check("and the whole archive can go", legendOf("archive-size"),
+        ["firmware", "cuda"]);
+  check("taking the axis down with it", topTick() < withWhole / 10, true);
+  check("shares are per group too", legendOf("archive-share"), ["firmware", "cuda"]);
+  check("the tiles still sum them",
+        T.S.document.getElementById("tile-sel-label").textContent,
+        "FIRMWARE AND CUDA");
+  T.state.zoom = null;
+  T.resetDefaults();
+
+  // With only the whole archive picked, the sums cover every group.
+  T.state.groups.clear();
+  check("no group picked sums everything",
+        T.timeline().totals[last].sel, k.total);
   T.resetDefaults();
 
   // A one-percent group's share axis must still read: kernel's 10% floor and

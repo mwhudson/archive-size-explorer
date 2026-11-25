@@ -36,6 +36,11 @@ Groups chooses what is measured against it, from the
 [package groups](#package-groups) that between them hold every file. The page
 opens on kernel, which is the question it started with, and any set of groups
 can be put in its place — CUDA, or the toolchains, or everything but other.
+Archive size draws each group picked as a line of its own, so they can be
+compared, and the row's first chip, **whole archive**, is the line they are
+read against; turn it off and the axis fits the groups instead. The tiles and
+the other tabs sum the groups picked, or every group when only the whole
+archive is.
 
 The header carries the headline figures for whatever is selected: the total,
 how much of it is in the selected groups, everything else, and their share.
