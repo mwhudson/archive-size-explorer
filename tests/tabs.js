@@ -89,6 +89,28 @@ suite(async ({page, check}) => {
   check("no slider, dots stay at the end", timeAt0, dots());
   T.resetDefaults();
 
+  // "The numbers" starts folded on both tabs that have it; opening it builds
+  // the table, and it stays open while the slider moves.
+  for (const v of ["archive", "lists"]) {
+    T.resetDefaults();
+    T.state.view = v;
+    T.render();
+    const views = T.S.document.getElementById("views");
+    const button = () => views.querySelectorAll("button")
+      .find(b => b.textContent === "show" || b.textContent === "hide");
+    const tables = () => views.querySelectorAll(".tablewrap").length;
+    check("numbers folded on " + v, [button().textContent, tables()], ["show", 0]);
+    button().click();
+    check("...and open on show", [button().textContent, tables()], ["hide", 1]);
+    const range = views.querySelector("input");
+    range.value = 0;
+    range.dispatch("input");
+    check("...staying open on a drag", [button().textContent, tables()], ["hide", 1]);
+    button().click();
+    check("...and folding again", tables(), 0);
+  }
+  T.resetDefaults();
+
   // A link into a tab still works, and an unknown one falls back.
   const T2 = await load(page, "#v=breakdown");
   check("link into a tab", T2.state.view, "breakdown");

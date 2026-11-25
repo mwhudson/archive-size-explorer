@@ -2262,7 +2262,8 @@ function viewArchive(host) {
         '<div class="tt-row"><span>packages</span><span>' + count(d.n) + "</span></div>",
     });
 
-    const t = card(body, "The numbers", "");
+    const t = foldedCard(body, "The numbers", "archive-numbers");
+    if (!t) return;
     const wrap = document.createElement("div");
     wrap.className = "tablewrap";
     let html = "<table><thead><tr><th>Snapshot</th><th>Archive</th>" +
@@ -2505,7 +2506,8 @@ function viewLists(host) {
     legend(ac, [["kernel entries", "var(--s1)"],
                 ["every entry", "var(--neutral-fill)"]]);
 
-    const t = card(body, "The numbers", "");
+    const t = foldedCard(body, "The numbers", "lists-numbers");
+    if (!t) return;
     const wrap = document.createElement("div");
     wrap.className = "tablewrap";
     let html = "<table><thead><tr><th>Snapshot</th><th>Indexes</th>" +
@@ -2573,6 +2575,35 @@ function card(host, title, sub, key) {
     if (key && state.zoom === key) zoomFound = true;
   }
   return body;
+}
+
+// Which folded cards have been opened.  Not in the URL, being how much of a
+// tab you want to read rather than what it shows, but kept across renders,
+// so that a table opened beside the snapshot slider stays open as it moves.
+const unfolded = new Set();
+
+/** A card that starts folded to its heading: the long tables of every
+ *  snapshot, which are the numbers behind a chart rather than a reading of
+ *  it.  Returns the body to fill, or null while folded -- nothing is built
+ *  then, which on the weekly page is a couple of hundred rows saved per
+ *  redraw. */
+function foldedCard(host, title, id) {
+  const body = card(host, title, "");
+  const h = body.parentNode.children[0];   // the heading card() wrote first
+  const open = unfolded.has(id);
+  const b = document.createElement("button");
+  b.className = "p-button is-small is-dense";
+  b.type = "button";
+  b.textContent = open ? "hide" : "show";
+  b.title = open ? "fold the table away" : "show the table";
+  b.setAttribute("aria-expanded", open ? "true" : "false");
+  b.addEventListener("click", () => {
+    if (open) unfolded.delete(id); else unfolded.add(id);
+    render();
+  });
+  h.appendChild(b);
+  if (!open) body.style.display = "none";
+  return open ? body : null;
 }
 
 function legend(host, entries) {
