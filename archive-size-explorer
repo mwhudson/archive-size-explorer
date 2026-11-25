@@ -526,15 +526,18 @@ def encode(byclass, byflavour, bybucket, byindex, snaps, series_list,
                 out |= new_bit
         return out
 
+    # Packages and download size.  The aggregates carry installed size too,
+    # but the page stopped offering it: it was a quarter of the page's weight
+    # for a measure nobody compared mirrors by.
     cls_rows = []
     for (snap, smask, arch, comp, mask, cls), acc in sorted(byclass.items()):
         cls_rows += [snap_i[snap], shrink(smask), arch_i[arch], comp_i[comp],
-                     mask, class_i[cls], acc[0], acc[1], acc[2]]
+                     mask, class_i[cls], acc[0], acc[1]]
     flav_rows = []
     for (snap, smask, arch, comp, mask, flav), acc in sorted(
             byflavour.items()):
         flav_rows += [snap_i[snap], shrink(smask), arch_i[arch], comp_i[comp],
-                      mask, flav_i[flav], acc[0], acc[1], acc[2]]
+                      mask, flav_i[flav], acc[0], acc[1]]
     # Only the named groups.  Kernel and other are each half the table's rows
     # and both already follow from byClass, which partitions the same files
     # under the same keys: kernel is its non-OTHER rows, and other is what is
@@ -547,7 +550,7 @@ def encode(byclass, byflavour, bybucket, byindex, snaps, series_list,
             continue
         bucket_rows += [snap_i[snap], shrink(smask), arch_i[arch],
                         comp_i[comp], mask, bucket_i[bucket],
-                        acc[0], acc[1], acc[2]]
+                        acc[0], acc[1]]
     # One row per index file, so the pocket is a plain number here rather than
     # the bitmask the other tables carry: a Packages file belongs to exactly
     # one suite, and there is nothing to deduplicate.
@@ -588,9 +591,9 @@ def encode(byclass, byflavour, bybucket, byindex, snaps, series_list,
             "flavours": flavours,
             "buckets": buckets,
         },
-        "byClass": {"stride": 9, "rows": cls_rows},
-        "byFlavour": {"stride": 9, "rows": flav_rows},
-        "byBucket": {"stride": 9, "rows": bucket_rows},
+        "byClass": {"stride": 8, "rows": cls_rows},
+        "byFlavour": {"stride": 8, "rows": flav_rows},
+        "byBucket": {"stride": 8, "rows": bucket_rows},
         "byIndex": {"stride": 9, "rows": idx_rows},
     }
 

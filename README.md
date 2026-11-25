@@ -607,8 +607,6 @@ dropped is 48.9%.
   component it is found in, searched in `main`, `restricted`, `universe`,
   `multiverse` order. Genuine component moves are rare enough that this only
   affects a handful of packages.
-* `Installed-Size` is in KiB in the index; the "installed size" measure
-  multiplies it by 1024, so both measures are in bytes.
 * The "compressed" size on the Package lists tab is the single variant this
   tool fetches, which is the `.xz` for every index in the window — the archive
   publishes a `.gz` of each as well, and `Release` lists an uncompressed

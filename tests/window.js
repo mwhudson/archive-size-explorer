@@ -167,12 +167,12 @@ suite(async ({page, check}) => {
   T.render();
 
   // And "whole range" puts it back without touching the other filters.
-  T.state.metric = "isize";
+  T.state.splitBy = "arch";
   T.render();
   const chip = row().querySelectorAll("button")[0];
   check("whole-range chip offered", chip && chip.textContent, "whole range");
   chip.click();
-  check("whole range restores", [T.state.from, T.state.to, T.state.metric],
-        [0, last, "isize"]);
+  check("whole range restores", [T.state.from, T.state.to, T.state.splitBy],
+        [0, last, "arch"]);
   check("... and the chip goes", row().querySelectorAll("button").length, 0);
 });

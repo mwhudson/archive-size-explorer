@@ -25,7 +25,6 @@ suite(async ({page, check}) => {
   const cases = [
     ["v=time",      () => { T.state.view = "time"; }],
     ["v=lists",     () => { T.state.view = "lists"; }],
-    ["m=isize",     () => { T.state.metric = "isize"; }],
     ["l=arch",      () => { T.state.splitBy = "arch"; }],
     ["l=group",     () => { T.state.splitBy = "group"; }],
     ["d=log",       () => { T.state.shown = "log"; }],
@@ -87,6 +86,13 @@ suite(async ({page, check}) => {
   T.applyHash("#g=archive");
   check("whole archive alone", [T.state.whole, T.state.groups.size, T.encodeState()],
         [true, 0, "g=archive"]);
+
+  // Installed size was a measure until it was dropped to slim the page; a
+  // link from before then still opens, on download size.
+  clean(T);
+  T.applyHash("#v=time&m=isize");
+  check("old m=isize link survives", [T.state.view, T.encodeState()],
+        ["time", "v=time"]);
 
   // An unknown series name is ignored rather than fatal.
   clean(T);
@@ -185,7 +191,7 @@ suite(async ({page, check}) => {
   check("external hashchange applies", T.state.view, "time");
 
   // Everything at once still renders.
-  T.applyHash("#v=lists&m=isize&d=rate&w=1&f=0");
+  T.applyHash("#v=lists&l=arch&d=rate&w=1&f=0");
   T.render();
   check("combined state renders",
         T.S.document.getElementById("views").children.length > 0, true);

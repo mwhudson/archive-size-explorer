@@ -607,13 +607,13 @@ function activeSeries() {
 // not changed size since the snapshot before is taken for a fossil.
 function guessedActiveSeries() {
   const last = D.snapshots.length - 1;
-  const rows = DATA.byClass.rows;
+  const rows = DATA.byClass.rows, st = DATA.byClass.stride;
   const now = new Array(D.series.length).fill(0);
   const before = new Array(D.series.length).fill(0);
-  for (let i = 0; i < rows.length; i += 9) {
+  for (let i = 0; i < rows.length; i += st) {
     const bucket = rows[i] === last ? now : (rows[i] === last - 1 ? before : null);
     if (!bucket) continue;
-    const mask = rows[i + 1], size = rows[i + 7];
+    const mask = rows[i + 1], size = rows[i + SIZE];
     for (let ser = 0; ser < D.series.length; ser++) {
       if (mask >> ser & 1) bucket[ser] += size;
     }
@@ -644,7 +644,6 @@ const DEFAULTS = {
   // denominator either way; leaving it out is so that two small groups can
   // be compared on an axis that fits them.
   whole: true,
-  metric: "size",
   splitBy: "series",
   shown: "total",
   rateWindow: 3,
@@ -669,7 +668,6 @@ const state = {
   comp: new Set(DEFAULTS.comp),
   groups: new Set(DEFAULTS.groups),
   whole: DEFAULTS.whole,
-  metric: DEFAULTS.metric,
   splitBy: DEFAULTS.splitBy,
   shown: DEFAULTS.shown,
   rateWindow: DEFAULTS.rateWindow,
@@ -744,7 +742,6 @@ function encodeState() {
     set("g", (state.whole ? [WHOLE] : []).concat(
       [...state.groups].sort((a, b) => a - b).map(b => BUCKETS[b])).join(","));
   }
-  if (state.metric !== DEFAULTS.metric) set("m", state.metric);
   if (state.splitBy !== DEFAULTS.splitBy) set("l", state.splitBy);
   if (state.shown !== DEFAULTS.shown) set("d", state.shown);
   if (state.rateWindow !== DEFAULTS.rateWindow) set("w", state.rateWindow);
@@ -787,7 +784,6 @@ function applyHash(hash) {
     setTo(state.groups, namesToSet(got.get("g"), BUCKETS));
     state.whole = got.get("g").split(",").includes(WHOLE);
   }
-  if (["size", "isize"].includes(got.get("m"))) state.metric = got.get("m");
   if (["series", "arch", "group"].includes(got.get("l"))) state.splitBy = got.get("l");
   if (["total", "log", "rate"].includes(got.get("d"))) state.shown = got.get("d");
   if (got.has("w")) {
@@ -870,7 +866,6 @@ function resetDefaults() {
   setTo(state.comp, DEFAULTS.comp);
   setTo(state.groups, DEFAULTS.groups);
   state.whole = DEFAULTS.whole;
-  state.metric = DEFAULTS.metric;
   state.splitBy = DEFAULTS.splitBy;
   state.shown = DEFAULTS.shown;
   state.rateWindow = DEFAULTS.rateWindow;
@@ -921,7 +916,12 @@ function pocketMask() {
   for (const p of state.pocket) m |= 1 << p;
   return m;
 }
-const metricIdx = () => (state.metric === "size" ? 7 : 8);
+// byClass, byFlavour and byBucket are snapshot, series mask, arch,
+// component, pocket mask, class/flavour/group, packages, download size.
+// They used to carry installed size after that, and a dataset saved by
+// --json before it went still does, so the scans step by each table's own
+// stride rather than assuming one; the size is column 7 either way.
+const SIZE = 7;
 
 // A row's mask is every pocket the file appears in; it is included when the
 // selection touches any of them, and counted once. That is exactly the union
@@ -938,25 +938,25 @@ function seriesMask() {
 // the archive holds on disk, rather than the sum of the indexes.
 function scanClass(fn) {
   const rows = DATA.byClass.rows, pm = pocketMask(), sm = seriesMask();
-  const vi = metricIdx();
-  for (let i = 0; i < rows.length; i += 9) {
+  const st = DATA.byClass.stride;
+  for (let i = 0; i < rows.length; i += st) {
     if (!(rows[i + 4] & pm)) continue;
     if (!(rows[i + 1] & sm)) continue;
     if (!state.arch.has(rows[i + 2])) continue;
     if (!state.comp.has(rows[i + 3])) continue;
-    fn(rows[i], rows[i + 1], rows[i + 2], rows[i + 5], rows[i + 6], rows[i + vi]);
+    fn(rows[i], rows[i + 1], rows[i + 2], rows[i + 5], rows[i + 6], rows[i + SIZE]);
   }
 }
 
 function scanFlavour(fn) {
   const rows = DATA.byFlavour.rows, pm = pocketMask(), sm = seriesMask();
-  const vi = metricIdx();   // byClass's columns, flavour where class goes
-  for (let i = 0; i < rows.length; i += 9) {
+  const st = DATA.byFlavour.stride;   // byClass's columns, flavour where class goes
+  for (let i = 0; i < rows.length; i += st) {
     if (!(rows[i + 4] & pm)) continue;
     if (!(rows[i + 1] & sm)) continue;
     if (!state.arch.has(rows[i + 2])) continue;
     if (!state.comp.has(rows[i + 3])) continue;
-    fn(rows[i], rows[i + 1], rows[i + 2], rows[i + 5], rows[i + 6], rows[i + vi]);
+    fn(rows[i], rows[i + 1], rows[i + 2], rows[i + 5], rows[i + 6], rows[i + SIZE]);
   }
 }
 
@@ -976,14 +976,14 @@ function scanGroups(fn) {
     fn(snap, smask, arch, cls === OTHER ? OTHER_BUCKET : KERNEL_BUCKET, n, v));
   if (!DATA.byBucket) return;
   const rows = DATA.byBucket.rows, pm = pocketMask(), sm = seriesMask();
-  const vi = metricIdx();
-  for (let i = 0; i < rows.length; i += 9) {
+  const st = DATA.byBucket.stride;
+  for (let i = 0; i < rows.length; i += st) {
     if (!(rows[i + 4] & pm)) continue;
     if (!(rows[i + 1] & sm)) continue;
     if (!state.arch.has(rows[i + 2])) continue;
     if (!state.comp.has(rows[i + 3])) continue;
     const snap = rows[i], smask = rows[i + 1], arch = rows[i + 2];
-    const n = rows[i + 6], v = rows[i + vi];
+    const n = rows[i + 6], v = rows[i + SIZE];
     fn(snap, smask, arch, rows[i + 5], n, v);
     fn(snap, smask, arch, OTHER_BUCKET, -n, -v);
   }
@@ -1758,7 +1758,6 @@ function filterSummary() {
     bits.push(stamp(D.snapshots[state.from]) + " to " +
               stamp(D.snapshots[state.to]));
   }
-  if (state.metric !== DEFAULTS.metric) bits.push("installed size");
   if (state.splitBy === "arch") bits.push("a line per architecture");
   if (state.splitBy === "group") bits.push("a line per group");
   if (state.shown === "log") bits.push("log scale");
@@ -1814,8 +1813,6 @@ function buildFilters() {
                              }]]));
   windowRow(host);
 
-  host.appendChild(pickRow("Measure", [["size", "Download size"],
-                                       ["isize", "Installed size"]], "metric"));
   host.appendChild(pickRow("One line per", [["series", "Series"],
                                             ["arch", "Architecture"],
                                             ["group", "Package group"]], "splitBy"));
