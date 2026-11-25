@@ -250,9 +250,11 @@ needs Dart Sass. The build itself needs neither.
   comparable with any other tab's. That is the point of it.
 * **The payload's `byBucket` has no kernel or other rows.** They were most of
   the table and both follow exactly from `byClass`, which covers the same
-  files under the same keys; `bucketTimeline()` derives them, and
+  files under the same keys; `scanGroups()` derives them, and
   `tests/groups.js` checks the groups still sum to the archive. The cache
-  keeps them, so `breakdown` and `verify` see every group.
+  keeps them, so `breakdown` and `verify` see every group. The derivation
+  hands each named row back negated as other, so a single call can be
+  negative: build only sums on it.
 * **The kernel rule matches names.** It used to be driven by
   `Provides: linux-image` alone and missed the restricted signatures and the
   older images; nothing in a slim index ties a signed module to a kernel but

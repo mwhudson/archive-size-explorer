@@ -6,7 +6,7 @@
 // things, and the charts have stopped repeating them.
 const {load, suite} = require("./page.js");
 
-const VIEWS = ["archive", "time", "breakdown", "groups", "table", "lists"];
+const VIEWS = ["archive", "time", "breakdown", "table", "lists"];
 
 // Prose that belongs in the footer and must not reappear under a chart.
 const MOVED = [
@@ -28,6 +28,8 @@ suite(async ({page, check}) => {
   check("eight paragraphs inside", (f.match(/<p>/g) || []).length, 8);
   check("package groups are explained there",
         /Package groups put every file in exactly one group/.test(f), true);
+  check("and what the filter does to a share",
+        /a share is of the archive as filtered/.test(f), true);
   check("the kernel rule names the restricted signatures",
         /linux-restricted-signatures/.test(f), true);
   check("dash convention is explained there",
@@ -43,7 +45,7 @@ suite(async ({page, check}) => {
   // The long disclaimers must be gone from under every chart, on every tab.
   for (const v of VIEWS) {
     T.state.view = v;
-    for (const split of ["series", "arch"]) {
+    for (const split of ["series", "arch", "group"]) {
       T.state.splitBy = split;
       T.render();
       const body = T.S.document.getElementById("views").textContent;
@@ -76,7 +78,7 @@ suite(async ({page, check}) => {
   T.render();
   const arch = T.S.document.getElementById("views").textContent;
   check("archive size keeps its summary line",
-        /and kernels went from [\d.]+% of it to [\d.]+%\./.test(arch), true);
+        /and kernel went from [\d.]+% of it to [\d.]+%\./.test(arch), true);
 
   // The 'all' note is conditional on the arch split with 'all' ticked.
   T.state.view = "lists";

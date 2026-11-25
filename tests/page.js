@@ -15,9 +15,9 @@ const S = require("./stub.js");
 
 const IDS = ["filterbtn", "filters", "footer", "generated", "resetbtn",
              "themebtn", "tooltip", "views",
-             "tile-kernel", "tile-kernel-note", "tile-other",
+             "tile-sel", "tile-sel-label", "tile-sel-note", "tile-other",
              "tile-other-label", "tile-other-note", "tile-share",
-             "tile-share-note", "tile-total", "tile-total-note"];
+             "tile-share-label", "tile-share-note", "tile-total", "tile-total-note"];
 
 /** The tab row as the template declares it: view, label and aria-selected. */
 function tabsFrom(html) {
@@ -70,7 +70,7 @@ async function load(page, hash) {
   const src = blocks.join("\n").replace(
     /\n(applyHash\(location\.hash\);\s*\nrender\(\);\s*\n\}\)\(\);)/,
     "\nglobalThis.__T = {state, DEFAULTS, D, DATA, render, encodeState," +
-    " applyHash, resetDefaults, timeline, syncHash, bucketTimeline, BUCKETS};\n$1");
+    " applyHash, resetDefaults, timeline, syncHash, groupTimeline, BUCKETS};\n$1");
   if (!/globalThis\.__T/.test(src)) throw new Error("could not splice the hook");
 
   let failed;

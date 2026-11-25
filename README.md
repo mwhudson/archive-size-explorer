@@ -19,8 +19,9 @@ the rest of `pool/` into package groups, CUDA and ROCm and the toolchains among
 them, so that whatever else is taking the room can be watched too.
 
 The output is a single HTML file: open it with `file://`, mail it to someone,
-put it on a web server. Series, architecture, pocket and component are filters
-in the page, so you explore by clicking rather than by re-running the script.
+put it on a web server. Series, architecture, pocket, component and package
+group are filters in the page, so you explore by clicking rather than by
+re-running the script.
 
 `kernel-sizes`, alongside this in the repo, is where the tool started: it
 answers the kernel question from whatever `chdist` has on disk, by the narrower
@@ -30,26 +31,34 @@ counting differs.
 
 ## The page
 
+The **Groups** filter is the odd one out. The others choose the archive;
+Groups chooses what is measured against it, from the
+[package groups](#package-groups) that between them hold every file. The page
+opens on kernel, which is the question it started with, and any set of groups
+can be put in its place — CUDA, or the toolchains, or everything but other.
+
 The header carries the headline figures for whatever is selected: the total,
-how much of it is kernel packages, everything else, and the kernel share. The
-total reads largest because it is the denominator for everything below it, and
-its note says what went into it — the selection is not always the whole
+how much of it is in the selected groups, everything else, and their share.
+The total reads largest because it is the denominator for everything below it,
+and its note says what went into it — the selection is not always the whole
 archive.
 
-There are six tabs. **Archive size** is where the page opens: the archive total
-over time, deduplicated across series, and the kernel share of it. **Kernels
-over time** draws kernel bytes and kernel share the same way, as a line per
-series or per architecture. **Kernel breakdown** takes a single snapshot apart
-instead — kernel share by architecture, where the kernel bytes go, and a split
-by flavour. **Package groups** does for the whole archive what the kernel tabs
-do for kernels: every file in exactly one group, a line per group in bytes and
-as a share, and the chosen snapshot's groups side by side. **Tables** is the
-numbers behind the charts, plus one snapshot in full. **Package lists** asks
-the same questions of `dists/` rather than `pool/`, and is the one tab whose
-numbers are not comparable with the others.
+There are five tabs. **Archive size** is where the page opens: the archive
+total over time, deduplicated across series, the selected groups' share of it,
+and at the chosen snapshot every group side by side. **Share over time** draws
+the selected groups' bytes and share the same way, as a line per series, per
+architecture or per group. **Kernel breakdown** takes a single snapshot's
+kernels apart — where the kernel bytes go, and a split by flavour — and is
+about kernels whichever groups are selected, since only the kernel rule knows
+what kind of package something is. **Tables** is the numbers behind the
+charts, plus one snapshot in full and every group at it. **Package lists** asks
+the same questions of `dists/` rather than `pool/`, about kernels only again,
+and is the one tab whose numbers are not comparable with the others.
 
-A "one line per" control switches the charts between a line per series and a
-line per architecture.
+A "one line per" control switches the charts between a line per series, per
+architecture and per package group. Split by group, each selected group is a
+line of its own and its share is of the archive, so the lines add up to the
+selection and a group outgrowing the archive is the one that rises.
 
 **Time window** narrows every tab to a stretch of the snapshots: drag the two
 thumbs to the first and last you want, and the charts redraw when you let go.
@@ -63,7 +72,8 @@ months.
 
 The page opens with the series a mirror still has to carry ticked, and the ones
 moved off to old-releases.ubuntu.com left alone. **select default** on the
-series row puts that selection back once you have clicked around, and **Reset**
+series row puts that selection back once you have clicked around, as it puts
+kernel back on the groups row, and **Reset**
 in the header puts every filter and control back to how the page opened,
 without moving you off the tab you are on.
 
@@ -93,7 +103,7 @@ The address bar follows the page, so a link carries the filters, the tab, the
 time window, the chosen snapshot and whichever chart is focused. Only what
 differs from the defaults is written, which leaves an untouched page with a
 clean URL and makes a shared link read as a list of what the sender changed —
-`#v=time&s=trusty,xenial&d=log&f=0` is the Over time tab, two series, log
+`#v=time&s=trusty,xenial&d=log&f=0` is the Share over time tab, two series, log
 scale, filters folded. It goes in the hash rather than a query string so that a
 page opened over `file://` carries it too, and it is written with names and
 snapshot stamps rather than indices so that a link still means the same thing
@@ -341,7 +351,8 @@ nothing outside `linux*`, while leaving nothing in `linux*` but
 ## Package groups
 
 Kernels are not the only thing worth watching, so every file in `pool/` also
-goes into exactly one package group, and the groups add up to the archive.
+goes into exactly one package group, and the groups add up to the archive. The
+page's Groups filter picks among them.
 Kernel comes first and is the rule above; then the patterns in
 `aggregate/buckets.tsv`, tried in order against the source package's name, the
 first match winning; then other, for whatever none of them names.

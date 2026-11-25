@@ -145,8 +145,7 @@ suite(async ({page, check}) => {
 
   // Every tab still renders, on every scale, with a window in force.
   for (const shown of ["total", "log", "rate"]) {
-    for (const v of ["archive", "time", "breakdown", "groups", "table",
-                     "lists"]) {
+    for (const v of ["archive", "time", "breakdown", "table", "lists"]) {
       T.state.view = v;
       T.state.shown = shown;
       let threw = null;

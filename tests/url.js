@@ -27,6 +27,7 @@ suite(async ({page, check}) => {
     ["v=lists",     () => { T.state.view = "lists"; }],
     ["m=isize",     () => { T.state.metric = "isize"; }],
     ["l=arch",      () => { T.state.splitBy = "arch"; }],
+    ["l=group",     () => { T.state.splitBy = "group"; }],
     ["d=log",       () => { T.state.shown = "log"; }],
     ["d=rate&w=6",  () => { T.state.shown = "rate"; T.state.rateWindow = 6; }],
     ["f=0",         () => { T.state.filters = false; }],
@@ -63,6 +64,19 @@ suite(async ({page, check}) => {
   clean(T);
   T.applyHash("#" + s);
   check("series round-trip", T.encodeState(), s);
+
+  // Groups too, and Reset puts kernel back.
+  clean(T);
+  T.state.groups.clear();
+  T.state.groups.add(T.BUCKETS.indexOf("cuda"));
+  T.state.groups.add(T.BUCKETS.indexOf("rocm"));
+  const g = T.encodeState();
+  check("groups by name", g, "g=cuda,rocm");
+  clean(T);
+  check("Reset restores kernel", [...T.state.groups].map(b => T.BUCKETS[b]),
+        ["kernel"]);
+  T.applyHash("#" + g + ",nosuchgroup");
+  check("groups round-trip, unknown one ignored", T.encodeState(), g);
 
   // An unknown series name is ignored rather than fatal.
   clean(T);
