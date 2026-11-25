@@ -70,7 +70,7 @@ async function load(page, hash) {
   const src = blocks.join("\n").replace(
     /\n(applyHash\(location\.hash\);\s*\nrender\(\);\s*\n\}\)\(\);)/,
     "\nglobalThis.__T = {state, DEFAULTS, D, DATA, render, encodeState," +
-    " applyHash, resetDefaults, timeline, syncHash};\n$1");
+    " applyHash, resetDefaults, timeline, syncHash, bucketTimeline, BUCKETS};\n$1");
   if (!/globalThis\.__T/.test(src)) throw new Error("could not splice the hook");
 
   let failed;

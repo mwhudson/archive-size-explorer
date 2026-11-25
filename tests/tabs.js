@@ -6,17 +6,17 @@
 const fs = require("fs");
 const {load, suite, tabsFrom} = require("./page.js");
 
-const VIEWS = ["archive", "time", "breakdown", "table", "lists"];
+const VIEWS = ["archive", "time", "breakdown", "groups", "table", "lists"];
 
 suite(async ({page, check}) => {
   const html = fs.readFileSync(page, "utf8");
   const tabs = tabsFrom(html);
   check("tab order", tabs.map(t => t.view), VIEWS);
   check("tab labels", tabs.map(t => t.label),
-        ["Archive size", "Kernels over time", "Kernel breakdown", "Tables",
-         "Package lists"]);
+        ["Archive size", "Kernels over time", "Kernel breakdown",
+         "Package groups", "Tables", "Package lists"]);
   check("markup selects the first tab", tabs.map(t => t.selected),
-        ["true", "false", "false", "false", "false"]);
+        ["true", "false", "false", "false", "false", "false"]);
   check("title", /<title>([^<]*)<\/title>/.exec(html)[1],
         "Size of the Ubuntu archive");
 
@@ -27,10 +27,10 @@ suite(async ({page, check}) => {
   check("aria follows state",
         T.S.document.querySelectorAll(".tab")
           .map(t => t.getAttribute("aria-selected")),
-        ["true", "false", "false", "false", "false"]);
+        ["true", "false", "false", "false", "false", "false"]);
 
   // Every tab must render, and the archive tab must be the one that needs no
-  // v= in the URL while the other four all write one.
+  // v= in the URL while the other five all write one.
   for (const v of VIEWS) {
     T.state.view = v;
     T.render();

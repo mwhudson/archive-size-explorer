@@ -267,6 +267,7 @@ code { font-size: 12px; padding: 0 3px; }
   <button class="tab p-tabs__link" role="tab" data-view="archive" aria-selected="true">Archive size</button>
   <button class="tab p-tabs__link" role="tab" data-view="time" aria-selected="false">Kernels over time</button>
   <button class="tab p-tabs__link" role="tab" data-view="breakdown" aria-selected="false">Kernel breakdown</button>
+  <button class="tab p-tabs__link" role="tab" data-view="groups" aria-selected="false">Package groups</button>
   <button class="tab p-tabs__link" role="tab" data-view="table" aria-selected="false">Tables</button>
   <button class="tab p-tabs__link" role="tab" data-view="lists" aria-selected="false">Package lists</button>
 </div>
@@ -448,6 +449,16 @@ const archSlots = new Slots();
 // nothing is ever dropped for want of a colour.
 const pocketSlots = new Slots();
 const compSlots = new Slots();
+// Package groups, in buckets.tsv's order: kernel first, other last.  They are
+// not a filter -- every group is always drawn -- so their slots are assigned
+// once.  Kernel and other claim first, being the two lines everything else is
+// read against; past eight it is the last groups in the file that go dashed.
+const BUCKETS = D.buckets || [];
+const KERNEL_BUCKET = BUCKETS.indexOf("kernel");
+const OTHER_BUCKET = BUCKETS.indexOf("other");
+const bucketRank = k => (k === KERNEL_BUCKET ? -2 : k === OTHER_BUCKET ? -1 : k);
+const bucketSlots = new Slots((a, b) => bucketRank(a) - bucketRank(b));
+bucketSlots.assign(new Set(BUCKETS.map((_, i) => i)));
 // Suite -- a series and a pocket together, the thing a sources.list line names
 // and a Release file describes.  An index file belongs to exactly one, so it
 // splits as cleanly as pocket and component do.  The two are packed into one
@@ -692,7 +703,7 @@ function applyHash(hash) {
       continue;
     }
   }
-  const views = ["archive", "time", "breakdown", "table", "lists"];
+  const views = ["archive", "time", "breakdown", "groups", "table", "lists"];
   if (views.includes(got.get("v"))) state.view = got.get("v");
   if (got.has("s")) setTo(state.series, namesToSet(got.get("s"), D.series));
   if (got.has("a")) setTo(state.arch, namesToSet(got.get("a"), D.arches));
@@ -867,6 +878,49 @@ function scanFlavour(fn) {
     if (!state.comp.has(rows[i + 3])) continue;
     fn(rows[i], rows[i + 1], rows[i + 2], rows[i + 5], rows[i + 6], rows[i + vi]);
   }
+}
+
+// byBucket has byClass's columns with the package group where the class goes,
+// for the named groups only: kernel and other are left out of the payload,
+// since byClass already says what they are -- see bucketTimeline.
+function scanBucket(fn) {
+  const rows = DATA.byBucket.rows, pm = pocketMask(), sm = seriesMask();
+  const vi = metricIdx();
+  for (let i = 0; i < rows.length; i += 9) {
+    if (!(rows[i + 4] & pm)) continue;
+    if (!(rows[i + 1] & sm)) continue;
+    if (!state.arch.has(rows[i + 2])) continue;
+    if (!state.comp.has(rows[i + 3])) continue;
+    fn(rows[i], rows[i + 5], rows[i + 6], rows[i + vi]);
+  }
+}
+
+/** Per snapshot: each group's bytes and packages, and the total they make.
+ *
+ *  Every file is in exactly one group, so the groups partition the total.
+ *  Kernel is byClass's non-OTHER rows and other is the remainder, both exact
+ *  because byClass and byBucket cover the same files under the same keys.
+ */
+function bucketTimeline() {
+  const per = BUCKETS.map(() => D.snapshots.map(() => ({ v: 0, n: 0 })));
+  const totals = D.snapshots.map(() => ({ v: 0, n: 0 }));
+  scanClass((snap, smask, arch, cls, n, v) => {
+    totals[snap].v += v; totals[snap].n += n;
+    if (cls !== OTHER && KERNEL_BUCKET >= 0) {
+      per[KERNEL_BUCKET][snap].v += v; per[KERNEL_BUCKET][snap].n += n;
+    }
+  });
+  scanBucket((snap, b, n, v) => { per[b][snap].v += v; per[b][snap].n += n; });
+  if (OTHER_BUCKET >= 0) {
+    D.snapshots.forEach((_, i) => {
+      let v = totals[i].v, n = totals[i].n;
+      for (let b = 0; b < BUCKETS.length; b++) {
+        if (b !== OTHER_BUCKET) { v -= per[b][i].v; n -= per[b][i].n; }
+      }
+      per[OTHER_BUCKET][i] = { v, n };
+    });
+  }
+  return { per, totals };
 }
 
 // byIndex is one row per index file: snapshot, series, arch, component,
@@ -1793,6 +1847,115 @@ function drawBreakdown(host) {
   });
 }
 
+/* --------------------------------------------------------- package groups */
+
+function viewGroups(host) {
+  const tl = bucketTimeline();
+  const live = tl.totals.map((c, i) => (c.v ? i : -1))
+    .filter(i => i >= 0 && inWindow(i));
+  if (!live.length) {
+    host.innerHTML = '<div class="card"><div class="empty">' +
+      "Nothing selected.</div></div>";
+    return;
+  }
+  const firstIdx = live[0], lastIdx = live[live.length - 1];
+  const xs = D.snapshots.map(shortStamp);
+  const order = bucketSlots.drawable(new Set(BUCKETS.map((_, i) => i)));
+  const lines = pick => order.map(b => ({
+    name: BUCKETS[b],
+    colour: bucketSlots.colour(b),
+    dash: bucketSlots.dash(b),
+    points: tl.per[b].map((c, i) => (tl.totals[i].v ? pick(c, tl.totals[i]) : null)),
+  }));
+  const keys = ls => ls.map(l => [l.name, l.colour, l.dash]);
+
+  const bytesCard = card(host, "The archive by package group",
+    "Every file in pool/ in exactly one group, so the lines add up to the " +
+    "archive. Groups are matched on the source package's name.", "groups-bytes");
+  const bytesLines = lines(c => c.v);
+  lineChart(bytesCard, {
+    title: "the archive by package group",
+    x: xs,
+    xTitle: i => stamp(D.snapshots[i]),
+    fmt: bytes,
+    series: bytesLines,
+  });
+  legend(bytesCard, keys(bytesLines));
+
+  // The reading: which groups gained and lost the most share over the
+  // window, which is what a group outgrowing the archive looks like.
+  const share = (b, i) => (tl.totals[i].v ? tl.per[b][i].v / tl.totals[i].v : 0);
+  const moved = order.map(b => ({ b, from: share(b, firstIdx), to: share(b, lastIdx) }))
+    .map(m => Object.assign(m, { d: m.to - m.from }))
+    .sort((a, b) => b.d - a.d);
+  const say = m => BUCKETS[m.b] + " (" + pctFine(m.from) + " to " + pctFine(m.to) + ")";
+  if (firstIdx !== lastIdx) {
+    const up = moved.filter(m => m.d > 0).slice(0, 3);
+    const down = moved.filter(m => m.d < 0).reverse().slice(0, 2);
+    note(bytesCard,
+      "From " + stamp(D.snapshots[firstIdx]) + " to " + stamp(D.snapshots[lastIdx]) +
+      (up.length ? ", the biggest gains in share were " + up.map(say).join(", ") : "") +
+      (down.length ? (up.length ? "; " : ", ") + "the biggest losses " +
+                     down.map(say).join(", ") : "") + ".");
+  }
+
+  const shareCard = card(host, "Share of the archive, per package group",
+    "Each group as a percentage of everything selected, so a group outgrowing " +
+    "the archive rises and one merely keeping pace stays flat.", "groups-share");
+  const shareLines = lines((c, t) => 100 * c.v / t.v);
+  lineChart(shareCard, {
+    title: "share of the archive, per package group",
+    x: xs,
+    xTitle: i => stamp(D.snapshots[i]),
+    fmt: v => v.toFixed(0) + "%",
+    diffFmt: v => v.toFixed(2) + " pp",
+    logFmt: v => (v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(1)
+                                              : v.toFixed(2)) + "%",
+    series: shareLines,
+  });
+  legend(shareCard, keys(shareLines));
+
+  snapshotChooser(host, body => {
+    const snap = state.snap, total = tl.totals[snap].v;
+    const c = card(body, "Package groups at " + stamp(D.snapshots[snap]),
+      "Largest first.", "groups-at-snapshot");
+    barChart(c, {
+      title: "package groups at " + stamp(D.snapshots[snap]),
+      labelWidth: 130,
+      items: order.map(b => ({ label: BUCKETS[b], value: tl.per[b][snap].v,
+                               n: tl.per[b][snap].n }))
+        .filter(d => d.value > 0)
+        .sort((a, b) => b.value - a.value),
+      rowLabel: d => bytes(d.value) + ", " + pct(total ? d.value / total : 0),
+      tip: d => '<div class="tt-title">' + d.label + "</div>" +
+        '<div class="tt-row"><span>size</span><span>' + bytes(d.value) + "</span></div>" +
+        '<div class="tt-row"><span>share</span><span>' +
+        pctFine(total ? d.value / total : 0) + "</span></div>" +
+        '<div class="tt-row"><span>packages</span><span>' + count(d.n) + "</span></div>",
+    });
+
+    const t = card(body, "The numbers", "");
+    const wrap = document.createElement("div");
+    wrap.className = "tablewrap";
+    const since = firstIdx < snap ? firstIdx : null;
+    let html = "<table><thead><tr><th>Group</th><th>Size</th><th>Share</th>" +
+      "<th>Packages</th>" +
+      (since !== null ? "<th>Share at " + stamp(D.snapshots[since]) + "</th>" : "") +
+      "</tr></thead><tbody>";
+    for (const b of order) {
+      const cell = tl.per[b][snap];
+      html += "<tr><td>" + BUCKETS[b] + '</td><td class="num">' + bytes(cell.v) +
+        '</td><td class="num">' + pctFine(total ? cell.v / total : 0) +
+        '</td><td class="num">' + count(cell.n) + "</td>" +
+        (since !== null ? '<td class="num">' + pctFine(share(b, since)) + "</td>" : "") +
+        "</tr>";
+    }
+    html += "</tbody></table>";
+    wrap.innerHTML = html;
+    t.appendChild(wrap);
+  });
+}
+
 function viewTable(host, tl) {
   const sp = tl.split;
   const c = card(host, "Kernel share over time",
@@ -2432,6 +2595,7 @@ function render() {
   // The tab is removed at load for a dataset that predates the index table,
   // but do not make the dispatch depend on that having happened.
   if (state.view === "lists" && !DATA.byIndex) state.view = DEFAULTS.view;
+  if (state.view === "groups" && !DATA.byBucket) state.view = DEFAULTS.view;
   clampSnap();
   assignSlots();
   buildFilters();
@@ -2480,6 +2644,7 @@ function render() {
   if (state.view === "lists") viewLists(host);
   else if (state.view === "archive") viewArchive(host);
   else if (state.view === "breakdown") viewBreakdown(host);
+  else if (state.view === "groups") viewGroups(host);
   else if (state.view === "time") viewTime(host, timeline());
   else viewTable(host, timeline());
 
@@ -2495,11 +2660,13 @@ function render() {
   syncHash();
 }
 
-// --from-json can replay a dataset built before the index table existed.
-if (!DATA.byIndex) {
-  const stale = document.querySelector('.tab[data-view="lists"]');
+// --from-json can replay a dataset built before the index table, or the
+// bucket table, existed.
+for (const [view, table] of [["lists", "byIndex"], ["groups", "byBucket"]]) {
+  if (DATA[table]) continue;
+  const stale = document.querySelector('.tab[data-view="' + view + '"]');
   if (stale) stale.remove();
-  if (state.view === "lists") state.view = DEFAULTS.view;
+  if (state.view === view) state.view = DEFAULTS.view;
 }
 
 document.querySelectorAll(".tab").forEach(t =>
@@ -2534,9 +2701,20 @@ document.getElementById("generated").textContent =
 // because the footer is written once.
 const NOTES = [
   "A package counts as a kernel package when its source ships a binary that " +
-  "<code>Provides: linux-image</code>, plus any " +
+  "<code>Provides: linux-image</code>, builds a " +
+  "<code>linux-image-&lt;kver&gt;</code>, or builds any <code>linux-*</code> " +
+  "binary named for a kernel ABI - which is what brings in the signed and " +
+  "pre-built NVIDIA modules of <code>linux-restricted-signatures</code> and " +
+  "<code>linux-restricted-modules</code> - plus any " +
   "<code>linux-objects-*-&lt;kver&gt;</code> built for a kernel version seen " +
-  "in those images - the same rule as the <code>kernel-sizes</code> script.",
+  "in those images. <code>linux-firmware</code> is not a kernel package.",
+
+  "Package groups put every file in exactly one group, so they add up to " +
+  "the archive. Kernel is the rule above; the rest are patterns on the " +
+  "source package's name, tried in order, and anything none of them names " +
+  "is other. A library goes with the source that builds it, so the NVIDIA " +
+  "driver's userspace is nvidia-drivers while the per-kernel modules built " +
+  "from it are kernel.",
 
   "A file published to several pockets is counted once, so the totals are " +
   "what the archive actually stores rather than the sum of the indexes.",

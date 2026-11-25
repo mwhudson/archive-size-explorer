@@ -6,7 +6,7 @@
 // things, and the charts have stopped repeating them.
 const {load, suite} = require("./page.js");
 
-const VIEWS = ["archive", "time", "breakdown", "table", "lists"];
+const VIEWS = ["archive", "time", "breakdown", "groups", "table", "lists"];
 
 // Prose that belongs in the footer and must not reappear under a chart.
 const MOVED = [
@@ -25,7 +25,11 @@ suite(async ({page, check}) => {
         /<details(\s|>)/.test(f) && !/<details[^>]*\bopen\b/.test(f), true);
   check("summary wording", /<summary>([^<]+)<\/summary>/.exec(f)[1],
         "How these numbers are counted");
-  check("seven paragraphs inside", (f.match(/<p>/g) || []).length, 7);
+  check("eight paragraphs inside", (f.match(/<p>/g) || []).length, 8);
+  check("package groups are explained there",
+        /Package groups put every file in exactly one group/.test(f), true);
+  check("the kernel rule names the restricted signatures",
+        /linux-restricted-signatures/.test(f), true);
   check("dash convention is explained there",
         /each repeat is dashed/.test(f), true);
   check("attribution sits outside the details",

@@ -30,7 +30,7 @@ fi
 
 here=$(dirname "$0")
 rc=0
-for suite in notes tabs url window; do
+for suite in groups notes tabs url window; do
     node "$here/$suite.js" "$page" || rc=1
 done
 exit $rc
