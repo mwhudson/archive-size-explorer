@@ -266,20 +266,41 @@ struct Kernels<'a> {
     kvers: FxHashSet<&'a [u8]>,
 }
 
+/// A binary named for one kernel ABI: linux-objects-nvidia-570-6.14.0-1009-gcp,
+/// linux-modules-nvidia-580-6.8.0-31-generic.  Digits only where an ABI has
+/// them, so that a name merely ending in a version does not qualify.
+const ABI_NAMED: &str =
+    r"^linux-.+-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+(\.[0-9]+)?-[a-z0-9]+(-[a-z0-9]+)*$";
+
 impl<'a> Kernels<'a> {
-    /// The kernel rule's two halves: every binary of a source that ships
-    /// something providing linux-image, plus any linux-objects-*-<kver> built
-    /// for a kernel version seen in those images.  Both need the whole
-    /// snapshot in hand before anything can be judged, so each shard
-    /// contributes its part and the parts are unioned.
-    fn gather(rows: &Rows<'a>) -> Self {
+    /// The kernel rule.  Every binary of a source counts when the source
+    ///
+    ///  * ships something that Provides: linux-image,
+    ///  * builds a linux-image-<kver>, which catches the older images that
+    ///    never declared the Provides (linux-hwe-5.4, linux-ibm), or
+    ///  * builds any linux-* binary named for a kernel ABI, which catches
+    ///    linux-restricted-signatures and the rest of linux-restricted-modules
+    ///    -- nothing else in them provides linux-image, and their objects can
+    ///    outlive the image they were built for;
+    ///
+    /// and on top of that any linux-objects-*-<kver> built for a kernel version
+    /// seen in the images, whatever its source.  The first rule alone missed a
+    /// few hundred GiB at 2026-11; the second and third claim nothing outside
+    /// linux*.  All of it needs the whole snapshot in hand before anything can
+    /// be judged, so each shard contributes its part and the parts are unioned.
+    fn gather(rows: &Rows<'a>, abi_named: &regex::bytes::Regex) -> Self {
         let mut k = Kernels::default();
         for (&(pkg, _, _), row) in rows {
-            if row.prov {
-                k.sources.insert(row.src);
-            }
-            if let Some(kver) = extract_kver(pkg) {
+            let kver = extract_kver(pkg);
+            if let Some(kver) = kver {
                 k.kvers.insert(kver);
+            }
+            if row.prov
+                || (row.arch != b"source"
+                    && pkg.starts_with(b"linux-")
+                    && (kver.is_some() || abi_named.is_match(pkg)))
+            {
+                k.sources.insert(row.src);
             }
         }
         k
@@ -540,9 +561,10 @@ fn main() {
     let nrows: usize = parts.iter().map(|p| p.len()).sum();
     let loaded = started.elapsed();
 
+    let abi_named = regex::bytes::Regex::new(ABI_NAMED).unwrap();
     let kernels = parts
         .par_iter()
-        .map(Kernels::gather)
+        .map(|rows| Kernels::gather(rows, &abi_named))
         .reduce(Kernels::default, Kernels::union);
     if sources_mode {
         print_sources(&parts, &kernels);

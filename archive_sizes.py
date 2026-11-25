@@ -740,7 +740,12 @@ OTHER = "_other"
 # 4 split upstream tarballs out of the source rows, so a .orig.tar shared by
 # several versions of a source is counted once, and gave the flavour table a
 # component column so the flavour chart can follow the Component filter.
-AGGREGATE_VERSION = 4
+#
+# 5 widened the kernel rule to the sources that build a linux-image-<kver>
+# or a binary named for a kernel ABI, which brings in the restricted
+# signatures, the rest of the restricted modules and the images too old to
+# declare Provides: linux-image.
+AGGREGATE_VERSION = 5
 
 
 def aggregate_key(series, components, arches, pockets, sources,
