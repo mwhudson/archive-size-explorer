@@ -51,6 +51,26 @@ suite(async ({page, check}) => {
         names.filter(n => !table.includes("<tr><td>" + n + "</td>")), []);
   check("URL for the tab", T.encodeState(), "v=groups");
 
+  // The table's moving columns are dated, and follow the slider; the
+  // baseline is the window's start and does not.  An undated Share beside a
+  // dated baseline read as the slider being ignored.
+  const heads = () => {
+    const html = T.S.document.getElementById("views")
+      .querySelectorAll(".tablewrap")[0].innerHTML;
+    return (html.match(/<th>Share at [^<]*<\/th>/g) || []).join(" | ");
+  };
+  const before = heads();
+  const range = T.S.document.getElementById("views").querySelector("input");
+  range.value = Math.floor((+range.min + +range.max) / 2);
+  range.dispatch("input");
+  const after = heads();
+  check("share heading follows the slider",
+        after.split(" | ")[0] !== before.split(" | ")[0], true);
+  check("baseline heading stays at the window start",
+        after.split(" | ")[1], before.split(" | ")[1]);
+  check("and says what it is", /window start/.test(after), true);
+  T.resetDefaults();
+
   // A link straight into the tab lands on it.
   const T2 = await load(page, "#v=groups");
   check("link into the tab", T2.state.view, "groups");

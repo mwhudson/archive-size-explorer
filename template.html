@@ -1934,13 +1934,18 @@ function viewGroups(host) {
         '<div class="tt-row"><span>packages</span><span>' + count(d.n) + "</span></div>",
     });
 
-    const t = card(body, "The numbers", "");
+    // Size, share and packages follow the slider; the last column is the
+    // window's first snapshot, held still as the baseline to compare against.
+    // So the moving columns carry the date, or the fixed one reads as stuck.
+    const at = stamp(D.snapshots[snap]);
+    const t = card(body, "The numbers at " + at, "");
     const wrap = document.createElement("div");
     wrap.className = "tablewrap";
     const since = firstIdx < snap ? firstIdx : null;
-    let html = "<table><thead><tr><th>Group</th><th>Size</th><th>Share</th>" +
-      "<th>Packages</th>" +
-      (since !== null ? "<th>Share at " + stamp(D.snapshots[since]) + "</th>" : "") +
+    let html = "<table><thead><tr><th>Group</th><th>Size</th>" +
+      "<th>Share at " + at + "</th><th>Packages</th>" +
+      (since !== null ? "<th>Share at " + stamp(D.snapshots[since]) +
+                        ", window start</th>" : "") +
       "</tr></thead><tbody>";
     for (const b of order) {
       const cell = tl.per[b][snap];
