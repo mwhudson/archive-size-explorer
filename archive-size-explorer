@@ -11,6 +11,7 @@ the expensive first run is the only expensive run.
   archive-size-explorer build -o archive.html     # fetch + write the page
   archive-size-explorer report -s noble           # text summary of one snapshot
   archive-size-explorer breakdown --family        # where the space actually goes
+  archive-size-explorer breakdown --buckets       # ...by the page's groups
   archive-size-explorer cache                     # what the cache is holding
 
 The output of "build" is a single self-contained HTML file: open it with
@@ -36,9 +37,9 @@ from archive_sizes import (  # noqa: E402
     ARCHIVE_BASE, Builder, Cache, Fetcher, CANDIDATE_SERIES,
     DEFAULT_COMPONENTS, LIVE, LIVE_SERIES, MIRROR_MAX_AGE, OTHER, POCKETS,
     MIRROR_REMOVED, RELEASE_ORDER, SEPARATE_SERIES, NoAggregator,
-    aggregate_key, default_cache_dir, live_digest, live_entries, log,
-    parse_aggregate, probe_mirror, removed_after, run_aggregator, series_bit,
-    snapshots,
+    aggregate_key, bucket_names, default_cache_dir, live_digest, live_entries,
+    log, parse_aggregate, probe_mirror, removed_after, run_aggregator,
+    series_bit, snapshots,
 )
 
 
@@ -216,7 +217,8 @@ def aggregate_snapshot(builder, snap, series_list, live_names=(),
                        live_token=None):
     """Merge one snapshot's pool over series_list and aggregate it.
 
-    Returns (cls_table, flav_table, idx_table, here, partial), where `here`
+    Returns (cls_table, flav_table, bucket_table, idx_table, here, partial),
+    where `here`
     names the series that existed at this snapshot and `partial` says a read
     was skipped -- which makes the result unfit to cache.
 
@@ -246,13 +248,14 @@ def aggregate_snapshot(builder, snap, series_list, live_names=(),
         here.append(series)
         planned.append((series, plan))
     if not planned:
-        return None, None, {}, here, partial
-    cls_table, flav_table, idx_table, _ = parse_aggregate(
+        return None, None, None, {}, here, partial
+    cls_table, flav_table, bucket_table, idx_table, _ = parse_aggregate(
         run_aggregator(builder.job(planned)).splitlines())
-    return cls_table, flav_table, idx_table, here, partial
+    return cls_table, flav_table, bucket_table, idx_table, here, partial
 
 
-def fold_separate(builder, snap, series, byclass, byflavour, byindex):
+def fold_separate(builder, snap, series, byclass, byflavour, bybucket,
+                  byindex):
     """Add one separately-aggregated series into a snapshot's tables.
 
     Its aggregate is cached under a key naming only itself, which is what
@@ -267,13 +270,13 @@ def fold_separate(builder, snap, series, byclass, byflavour, byindex):
                         builder.pockets, builder.sources)
     cached = builder.cache.get_aggregate(snap, key)
     if cached is not None:
-        cls_table, flav_table, idx_table, here = cached
+        cls_table, flav_table, bucket_table, idx_table, here = cached
     else:
-        cls_table, flav_table, idx_table, here, partial = \
+        cls_table, flav_table, bucket_table, idx_table, here, partial = \
             aggregate_snapshot(builder, snap, [series])
         if cls_table and not partial:
             builder.cache.put_aggregate(snap, key, cls_table, flav_table,
-                                        idx_table, here)
+                                        bucket_table, idx_table, here)
     mask = series_bit(series)
     if cls_table:
         for k, acc in cls_table.items():
@@ -283,13 +286,16 @@ def fold_separate(builder, snap, series, byclass, byflavour, byindex):
         for k, acc in flav_table.items():
             assert k[0] == mask, (series, k)
             byflavour[(snap, mask) + k[1:]] = acc
+        for k, acc in bucket_table.items():
+            assert k[0] == mask, (series, k)
+            bybucket[(snap, mask) + k[1:]] = acc
     # Index rows carry the series by name, so they need no shifting.
     for k, acc in idx_table.items():
         byindex[(snap,) + k] = acc
     return here, cached is not None
 
 
-def drop_removed(byclass, byflavour, byindex, series_list):
+def drop_removed(byclass, byflavour, bybucket, byindex, series_list):
     """Stop counting a series once it had left the mirror.
 
     The aggregate tables say what the snapshot service held, which keeps a
@@ -301,12 +307,12 @@ def drop_removed(byclass, byflavour, byindex, series_list):
     same place, previously distinguished only by which series referenced it --
     and those rows count disjoint sets of files, so the accumulators add.
 
-    Returns the three tables, and the number of bytes it stopped counting at
+    Returns the four tables, and the number of bytes it stopped counting at
     the most recent snapshot, which is the figure worth reporting.
     """
     gone = {s: series_bit(s) for s in series_list if s in MIRROR_REMOVED}
     if not gone:
-        return byclass, byflavour, byindex, 0
+        return byclass, byflavour, bybucket, byindex, 0
 
     def surviving_mask(snap, smask):
         for series, bit in gone.items():
@@ -316,7 +322,7 @@ def drop_removed(byclass, byflavour, byindex, series_list):
 
     last = max((k[0] for k in byclass), default=None)
     dropped = 0
-    out_class, out_flav = {}, {}
+    out_class = {}
     for key, acc in byclass.items():
         snap, smask = key[0], key[1]
         kept = surviving_mask(snap, smask)
@@ -336,22 +342,27 @@ def drop_removed(byclass, byflavour, byindex, series_list):
         else:
             for i in range(len(acc)):
                 prev[i] += acc[i]
-    for key, acc in byflavour.items():
-        snap, smask = key[0], key[1]
-        kept = surviving_mask(snap, smask)
-        if not kept:
-            continue
-        new_key = key if kept == smask else (snap, kept) + key[2:]
-        prev = out_flav.get(new_key)
-        if prev is None:
-            out_flav[new_key] = list(acc)
-        else:
-            for i in range(len(acc)):
-                prev[i] += acc[i]
+
+    def trim(table):
+        out = {}
+        for key, acc in table.items():
+            snap, smask = key[0], key[1]
+            kept = surviving_mask(snap, smask)
+            if not kept:
+                continue
+            new_key = key if kept == smask else (snap, kept) + key[2:]
+            prev = out.get(new_key)
+            if prev is None:
+                out[new_key] = list(acc)
+            else:
+                for i in range(len(acc)):
+                    prev[i] += acc[i]
+        return out
+
     # Index rows name their series outright, so there is nothing to merge.
     out_idx = {k: v for k, v in byindex.items()
                if not removed_after(k[1], k[0])}
-    return out_class, out_flav, out_idx, dropped
+    return out_class, trim(byflavour), trim(bybucket), out_idx, dropped
 
 
 def snapshot_key(builder, snap, series_list, live_names=(),
@@ -407,6 +418,7 @@ def collect(builder, snaps, series_list, separate=(), live_names=(),
     """
     byclass = {}
     byflavour = {}
+    bybucket = {}
     byindex = {}
     seen = []
     started = time.time()
@@ -414,9 +426,9 @@ def collect(builder, snaps, series_list, separate=(), live_names=(),
         key = snapshot_key(builder, snap, series_list, live_names, live_token)
         cached = builder.cache.get_aggregate(snap, key) if key else None
         if cached is not None:
-            cls_table, flav_table, idx_table, here = cached
+            cls_table, flav_table, bucket_table, idx_table, here = cached
         else:
-            cls_table, flav_table, idx_table, here, partial = \
+            cls_table, flav_table, bucket_table, idx_table, here, partial = \
                 aggregate_snapshot(builder, snap, series_list,
                                    live_names=live_names,
                                    live_token=live_token)
@@ -425,13 +437,14 @@ def collect(builder, snaps, series_list, separate=(), live_names=(),
             # yet, and would be indistinguishable once written down.
             if cls_table and not partial and key:
                 builder.cache.put_aggregate(snap, key, cls_table,
-                                            flav_table, idx_table, here)
+                                            flav_table, bucket_table,
+                                            idx_table, here)
         all_cached = cached is not None
         for extra in separate:
             if extra in series_list:
                 continue
-            e_here, e_cached = fold_separate(builder, snap, extra,
-                                             byclass, byflavour, byindex)
+            e_here, e_cached = fold_separate(builder, snap, extra, byclass,
+                                             byflavour, bybucket, byindex)
             all_cached = all_cached and e_cached
             for name in e_here:
                 if name not in seen:
@@ -441,6 +454,8 @@ def collect(builder, snaps, series_list, separate=(), live_names=(),
                 byclass[(snap,) + k] = acc
             for k, acc in flav_table.items():
                 byflavour[(snap,) + k] = acc
+            for k, acc in bucket_table.items():
+                bybucket[(snap,) + k] = acc
         for k, acc in idx_table.items():
             byindex[(snap,) + k] = acc
         for series in here:
@@ -455,11 +470,11 @@ def collect(builder, snaps, series_list, separate=(), live_names=(),
                     % (i, len(snaps), snap, builder.downloads,
                        builder.fetcher.bytes_downloaded / 2 ** 20,
                        builder.hits, time.time() - started))
-    return byclass, byflavour, byindex, sorted(seen)
+    return byclass, byflavour, bybucket, byindex, sorted(seen)
 
 
-def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None,
-           live_names=()):
+def encode(byclass, byflavour, bybucket, byindex, snaps, series_list,
+           mirrored=None, live_names=()):
     """Pack the tables into dimension dictionaries plus flat integer rows.
 
     The series dimension is a bitmask over series_list, not an index, so the
@@ -480,6 +495,14 @@ def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None,
                           | {k[3] for k in byindex})
     classes, class_i = index({k[5] for k in byclass})
     flavours, flav_i = index({k[5] for k in byflavour})
+    # Buckets in the order buckets.tsv gives them, not sorted: it is the order
+    # the page draws them in, kernel first and other last.  Any name the rules
+    # no longer have -- impossible, since they are in the cache key -- would
+    # land on the end rather than vanish.
+    present = {k[5] for k in bybucket}
+    buckets = [b for b in bucket_names() if b in present]
+    buckets += sorted(present - set(buckets))
+    bucket_i = {b: i for i, b in enumerate(buckets)}
     pocket_i = {p: i for i, p in enumerate(POCKETS)}
 
     # keep only the series that turned up, and renumber the masks to match
@@ -512,6 +535,19 @@ def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None,
             byflavour.items()):
         flav_rows += [snap_i[snap], shrink(smask), arch_i[arch], comp_i[comp],
                       mask, flav_i[flav], acc[0], acc[1], acc[2]]
+    # Only the named groups.  Kernel and other are each half the table's rows
+    # and both already follow from byClass, which partitions the same files
+    # under the same keys: kernel is its non-OTHER rows, and other is what is
+    # left of the total once kernel and the named groups are taken out --
+    # exact, being sums of the same integers, under any filter.
+    bucket_rows = []
+    for (snap, smask, arch, comp, mask, bucket), acc in sorted(
+            bybucket.items()):
+        if bucket in ("kernel", "other"):
+            continue
+        bucket_rows += [snap_i[snap], shrink(smask), arch_i[arch],
+                        comp_i[comp], mask, bucket_i[bucket],
+                        acc[0], acc[1], acc[2]]
     # One row per index file, so the pocket is a plain number here rather than
     # the bitmask the other tables carry: a Packages file belongs to exactly
     # one suite, and there is nothing to deduplicate.
@@ -550,9 +586,11 @@ def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None,
             "components": comps,
             "classes": classes,
             "flavours": flavours,
+            "buckets": buckets,
         },
         "byClass": {"stride": 9, "rows": cls_rows},
         "byFlavour": {"stride": 9, "rows": flav_rows},
+        "byBucket": {"stride": 9, "rows": bucket_rows},
         "byIndex": {"stride": 9, "rows": idx_rows},
     }
 
@@ -560,7 +598,7 @@ def encode(byclass, byflavour, byindex, snaps, series_list, mirrored=None,
 # How many leading columns of each table are keys rather than measurements.
 # Keys are small, and the rows are emitted in sorted order, so a key column
 # delta-encodes to almost nothing; a size column does not and is left alone.
-TABLE_KEYS = {"byClass": 6, "byFlavour": 6, "byIndex": 5}
+TABLE_KEYS = {"byClass": 6, "byFlavour": 6, "byBucket": 6, "byIndex": 5}
 
 
 def varint(n, out):
@@ -609,15 +647,17 @@ def encode_payload(data):
     """
     blob = bytearray()
     tables = []
-    for name in ("byClass", "byFlavour", "byIndex"):
+    for name in TABLE_KEYS:
+        # A --from-json dataset may predate a table; the page drops the tab.
+        if name not in data:
+            continue
         table = data[name]
         stride, keys = table["stride"], TABLE_KEYS[name]
         tables.append({"name": name, "stride": stride, "keys": keys,
                        "rows": len(table["rows"]) // stride})
         blob += pack_table(table["rows"], stride, keys)
     packed = gzip.compress(bytes(blob), 9)
-    header = {k: v for k, v in data.items() if k not in
-              ("byClass", "byFlavour", "byIndex")}
+    header = {k: v for k, v in data.items() if k not in TABLE_KEYS}
     header["tables"] = tables
     header["blob"] = base64.b64encode(packed).decode("ascii")
     return header, len(blob), len(packed)
@@ -682,24 +722,26 @@ def cmd_build(args):
            else "", args.cache))
 
     mirrored = mirror_series(builder, all_series)
-    byclass, byflavour, byindex, seen = collect(
+    byclass, byflavour, bybucket, byindex, seen = collect(
         builder, snaps, series_list + live_names, separate=separate,
         live_names=live_names, live_token=token)
     if not byclass:
         log("nothing collected -- wrong window, or an --offline run with a "
             "cold cache")
         return 1
-    byclass, byflavour, byindex, dropped = drop_removed(
-        byclass, byflavour, byindex, all_series)
+    byclass, byflavour, bybucket, byindex, dropped = drop_removed(
+        byclass, byflavour, bybucket, byindex, all_series)
     if dropped:
         log("not counting %.1f GiB at the latest snapshot: %s left the mirror"
             % (dropped / 2 ** 30,
                ", ".join(s for s in all_series if s in MIRROR_REMOVED)))
-    data = encode(byclass, byflavour, byindex, snaps, all_series,
+    data = encode(byclass, byflavour, bybucket, byindex, snaps, all_series,
                   mirrored=mirrored, live_names=live_names)
-    log("collected %d class rows, %d flavour rows, %d index rows across %s"
+    log("collected %d class rows, %d flavour rows, %d bucket rows, "
+        "%d index rows across %s"
         % (len(data["byClass"]["rows"]) // 9,
            len(data["byFlavour"]["rows"]) // 9,
+           len(data["byBucket"]["rows"]) // 9,
            len(data["byIndex"]["rows"]) // 9, ", ".join(seen)))
 
     if args.json:
@@ -724,8 +766,8 @@ def cmd_report(args):
     snaps = snapshots(args.snapshot, args.snapshot, "month") \
         if args.snapshot else snapshots(None, None, "month")[-1:]
     series_list, separate = requested_series(args.series)
-    byclass, _flav, _idx, seen = collect(builder, snaps, series_list,
-                                         separate=separate, progress=False)
+    byclass, _flav, _bucket, _idx, seen = collect(
+        builder, snaps, series_list, separate=separate, progress=False)
     # Which series to report on; the masks name them by SERIES_BITS bit.
     series_list = series_list + [s for s in separate if s not in series_list]
 
@@ -800,7 +842,7 @@ def family_of(src):
 
 
 def collect_sources(builder, snaps, series_list, match=None, family=False,
-                    kernels="include", progress=True):
+                    kernels="include", buckets=False, progress=True):
     """Bytes per source package (or family) per snapshot.
 
     Every pool file is counted once, the same way the archive-wide totals are:
@@ -832,15 +874,16 @@ def collect_sources(builder, snaps, series_list, match=None, family=False,
                 if fields[0] == "t":
                     archive[snap] = [int(fields[1]), int(fields[2])]
                     continue
-                src, kernel = fields[1], fields[2] == "1"
-                size, files = int(fields[3]), int(fields[4])
+                src, kernel, bucket = fields[1], fields[2] == "1", fields[3]
+                size, files = int(fields[4]), int(fields[5])
                 if kernels == "only" and not kernel:
                     continue
                 if kernels == "skip" and kernel:
                     continue
                 if match is not None and not match.search(src):
                     continue
-                group = family_of(src) if family else src
+                group = (bucket if buckets else
+                         family_of(src) if family else src)
                 acc = totals.setdefault((snap, group), [0, 0, set()])
                 acc[0] += size
                 acc[1] += files
@@ -853,11 +896,16 @@ def collect_sources(builder, snaps, series_list, match=None, family=False,
     return totals, archive, sorted(seen)
 
 
-def print_one_snapshot(totals, archive, snap, groups, family):
-    """Ranked table for a single point in time."""
+def print_one_snapshot(totals, archive, snap, groups, label):
+    """Ranked table for a single point in time.
+
+    The count column is how many sources a row stands for: versions carried
+    at once for a family, everything matched for a bucket.
+    """
     total = archive[snap][0]
     print("%9s %7s %7s %5s  %s"
-          % ("bytes", "%arch", "files", "vers", "family" if family else "source"))
+          % ("bytes", "%arch", "files", "srcs" if label == "bucket" else "vers",
+             label))
     for group in groups:
         size, files, members = totals[(snap, group)]
         print("%9s %6.2f%% %7d %5d  %s"
@@ -872,7 +920,7 @@ def print_one_snapshot(totals, archive, snap, groups, family):
                  "", "", others))
 
 
-def print_over_time(totals, archive, used, groups, family):
+def print_over_time(totals, archive, used, groups, label):
     """One row per group, one column per snapshot, plus how it moved.
 
     The share column is the one to read.  The archive itself grows as series
@@ -882,8 +930,7 @@ def print_over_time(totals, archive, used, groups, family):
     """
     cols = "".join("%10s" % s[:6] for s in used)
     first, last = used[0], used[-1]
-    print("%-24s%s %8s %10s"
-          % ("family" if family else "source", cols, "growth", "share"))
+    print("%-24s%s %8s %10s" % (label, cols, "growth", "share"))
     for label, which in (("archive total", 0), ("...of which kernels", 1)):
         print("%-24s%s" % (label,
                            "".join("%10s" % human(archive[s][which])
@@ -920,7 +967,9 @@ def cmd_breakdown(args):
 
     totals, archive, seen = collect_sources(
         builder, snaps, series_list, match=match, family=args.family,
-        kernels=kernels, progress=len(snaps) > 1)
+        kernels=kernels, buckets=args.buckets, progress=len(snaps) > 1)
+    label = ("bucket" if args.buckets else "family" if args.family
+             else "source")
     if not archive:
         log("nothing collected -- wrong window, or an --offline run with a "
             "cold cache")
@@ -946,9 +995,9 @@ def cmd_breakdown(args):
         print("nothing matched")
         return 0
     if len(used) == 1:
-        print_one_snapshot(totals, archive, last, groups, args.family)
+        print_one_snapshot(totals, archive, last, groups, label)
     else:
-        print_over_time(totals, archive, used, groups, args.family)
+        print_over_time(totals, archive, used, groups, label)
     return 0
 
 
@@ -997,9 +1046,13 @@ def main():
                         "ignored when --from/--to are given")
     p.add_argument("-n", "--top", type=int, default=25, metavar="N",
                    help="how many rows to show (default: %(default)s)")
-    p.add_argument("--family", action="store_true",
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--family", action="store_true",
                    help="group versioned siblings together, so gcc-13-cross "
                         "and gcc-14-cross count as one gcc-cross")
+    g.add_argument("--buckets", action="store_true",
+                   help="group by the package groups in aggregate/buckets.tsv, "
+                        "the ones the page charts")
     p.add_argument("--match", metavar="REGEX",
                    help="only sources whose name matches, e.g. "
                         "--match -- '-13-[0-9]+$' for one CUDA stack")

@@ -12,11 +12,15 @@
 //!
 //! Job format, tab-separated, one record per line:
 //!
+//!   bucket  <name>  <regex>
 //!   series  <name>  <bit>
 //!   ix      <component>  <dir-arch>  <pocket>  <pocket-bit>  <csize>  <usize>
 //!           <blob path>
 //!
-//! Each ix belongs to the series line above it, and the ix lines come in
+//! The bucket lines are aggregate/buckets.tsv, passed in rather than read
+//! here so that the rules a run used and the rules its cache key covers are
+//! the same bytes.  Each ix belongs to the series line above it, and the ix
+//! lines come in
 //! load order: component, then pocket, then plan order.  That order is not
 //! cosmetic -- the first sighting of a pool file decides its component and
 //! every other column.
@@ -26,7 +30,7 @@
 //! them, which is what `breakdown` ranks:
 //!
 //!   t  <all bytes>  <kernel bytes>
-//!   p  <source>  <1 if kernel, else 0>  <bytes>  <files>
+//!   p  <source>  <1 if kernel, else 0>  <bucket>  <bytes>  <files>
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -57,8 +61,14 @@ struct Series {
     ixs: Vec<Ix>,
 }
 
-fn read_job(input: impl BufRead) -> Result<Vec<Series>, String> {
+struct Job {
+    buckets: Buckets,
+    series: Vec<Series>,
+}
+
+fn read_job(input: impl BufRead) -> Result<Job, String> {
     let mut out: Vec<Series> = Vec::new();
+    let mut rules: Vec<(String, String)> = Vec::new();
     for (n, line) in input.lines().enumerate() {
         let line = line.map_err(|e| e.to_string())?;
         if line.is_empty() {
@@ -67,6 +77,7 @@ fn read_job(input: impl BufRead) -> Result<Vec<Series>, String> {
         let f: Vec<&str> = line.split('\t').collect();
         let bad = || format!("job line {}: {:?}", n + 1, line);
         match f[0] {
+            "bucket" if f.len() == 3 => rules.push((f[1].to_string(), f[2].to_string())),
             "series" if f.len() == 3 => out.push(Series {
                 name: f[1].to_string(),
                 bit: f[2].parse().map_err(|_| bad())?,
@@ -87,7 +98,51 @@ fn read_job(input: impl BufRead) -> Result<Vec<Series>, String> {
             _ => return Err(bad()),
         }
     }
-    Ok(out)
+    Ok(Job { buckets: Buckets::new(&rules)?, series: out })
+}
+
+// ---------------------------------------------------------------- buckets
+
+/// Package groups: one bucket per pool file, so that they add up to the
+/// archive.  "kernel" is the kernel rule; then the job's patterns in order,
+/// each matched against the whole source name, the first match winning; then
+/// "other" for whatever is left.
+struct Buckets {
+    names: Vec<String>,
+    rules: Vec<regex::bytes::Regex>,
+}
+
+const KERNEL_BUCKET: usize = 0;
+
+impl Buckets {
+    fn new(rules: &[(String, String)]) -> Result<Self, String> {
+        let mut names = vec!["kernel".to_string()];
+        let mut compiled = Vec::new();
+        for (name, rx) in rules {
+            if names.contains(name) || name == "other" {
+                return Err(format!("bucket {:?} named twice", name));
+            }
+            names.push(name.clone());
+            compiled.push(
+                regex::bytes::Regex::new(&format!("^(?:{})$", rx))
+                    .map_err(|e| format!("bucket {}: {}", name, e))?,
+            );
+        }
+        names.push("other".to_string());
+        Ok(Buckets { names, rules: compiled })
+    }
+
+    /// The bucket of a file the kernel rule does not claim.
+    fn of_source(&self, src: &[u8]) -> usize {
+        self.rules
+            .iter()
+            .position(|rx| rx.is_match(src))
+            .map_or(self.names.len() - 1, |i| i + 1)
+    }
+
+    fn name(&self, i: usize) -> &[u8] {
+        self.names[i].as_bytes()
+    }
 }
 
 // ---------------------------------------------------------------- rows
@@ -409,12 +464,28 @@ fn add(acc: &mut Acc, row: &Row) {
     acc[2] += row.isize * 1024;
 }
 
-fn aggregate<'a>(rows: &Rows<'a>, kernels: &Kernels, classifier: &Classifier)
-                 -> (Table<'a>, Table<'a>) {
+struct Tables<'a> {
+    by_class: Table<'a>,
+    by_source: Table<'a>,
+    by_bucket: Table<'a>,
+}
+
+fn aggregate<'a>(rows: &Rows<'a>, kernels: &Kernels, classifier: &Classifier,
+                 buckets: &'a Buckets) -> Tables<'a> {
     let mut by_class = Table::default();
     let mut by_source = Table::default();
+    let mut by_bucket = Table::default();
+    let mut bucket_of: FxHashMap<&[u8], usize> = FxHashMap::default();
     for (&(pkg, _, _), row) in rows {
         let kernel = kernels.is_kernel(pkg, row.src);
+        let bucket = if kernel {
+            KERNEL_BUCKET
+        } else {
+            *bucket_of.entry(row.src).or_insert_with(|| buckets.of_source(row.src))
+        };
+        add(by_bucket
+            .entry((row.smask, row.arch, row.component, row.mask, buckets.name(bucket)))
+            .or_default(), row);
         let cls: &'static str = if !kernel {
             "_other"
         } else if row.arch == b"source" {
@@ -431,7 +502,7 @@ fn aggregate<'a>(rows: &Rows<'a>, kernels: &Kernels, classifier: &Classifier)
                 .or_default(), row);
         }
     }
-    (by_class, by_source)
+    Tables { by_class, by_source, by_bucket }
 }
 
 fn merge<'a>(mut a: Table<'a>, b: Table<'a>) -> Table<'a> {
@@ -483,7 +554,7 @@ fn utf8(b: &[u8]) -> &str {
 }
 
 /// --sources: bytes and files per (source, is kernel), for `breakdown`.
-fn print_sources(parts: &[Rows], kernels: &Kernels) {
+fn print_sources(parts: &[Rows], kernels: &Kernels, buckets: &Buckets) {
     let per: FxHashMap<(&[u8], bool), [u64; 2]> = parts
         .par_iter()
         .map(|rows| {
@@ -510,7 +581,9 @@ fn print_sources(parts: &[Rows], kernels: &Kernels) {
     let mut out = BufWriter::new(io::stdout().lock());
     writeln!(out, "t\t{}\t{}", total, kernel).unwrap();
     for ((src, k), v) in rows {
-        writeln!(out, "p\t{}\t{}\t{}\t{}", utf8(src), k as u8, v[0], v[1]).unwrap();
+        let bucket = if k { KERNEL_BUCKET } else { buckets.of_source(src) };
+        writeln!(out, "p\t{}\t{}\t{}\t{}\t{}", utf8(src), k as u8,
+                 utf8(buckets.name(bucket)), v[0], v[1]).unwrap();
     }
     out.flush().unwrap();
 }
@@ -538,6 +611,7 @@ fn main() {
     // the index tally reuses them instead of inflating everything a second
     // time as Python does.
     let mut paths: Vec<&str> = job
+        .series
         .iter()
         .flat_map(|s| s.ixs.iter().map(|ix| ix.path.as_str()))
         .collect();
@@ -556,7 +630,7 @@ fn main() {
         .sum();
     let parts: Vec<Rows> = (0..shards)
         .into_par_iter()
-        .map(|s| load_shard(&job, &blobs, s, shards, lines / shards))
+        .map(|s| load_shard(&job.series, &blobs, s, shards, lines / shards))
         .collect();
     let nrows: usize = parts.iter().map(|p| p.len()).sum();
     let loaded = started.elapsed();
@@ -567,16 +641,24 @@ fn main() {
         .map(|rows| Kernels::gather(rows, &abi_named))
         .reduce(Kernels::default, Kernels::union);
     if sources_mode {
-        print_sources(&parts, &kernels);
+        print_sources(&parts, &kernels, &job.buckets);
         return;
     }
     let classifier = Classifier::new();
-    let (by_class, by_source) = parts
+    let Tables { by_class, by_source, by_bucket } = parts
         .par_iter()
-        .map(|rows| aggregate(rows, &kernels, &classifier))
+        .map(|rows| aggregate(rows, &kernels, &classifier, &job.buckets))
         .reduce(
-            || (Table::default(), Table::default()),
-            |(c1, s1), (c2, s2)| (merge(c1, c2), merge(s1, s2)),
+            || Tables {
+                by_class: Table::default(),
+                by_source: Table::default(),
+                by_bucket: Table::default(),
+            },
+            |a, b| Tables {
+                by_class: merge(a.by_class, b.by_class),
+                by_source: merge(a.by_source, b.by_source),
+                by_bucket: merge(a.by_bucket, b.by_bucket),
+            },
         );
     let mut flavour_of: FxHashMap<&[u8], String> = FxHashMap::default();
     let mut by_flavour: FxHashMap<(u64, &[u8], &str, u32, String), Acc> = FxHashMap::default();
@@ -598,7 +680,7 @@ fn main() {
         .map(|&p| (p, count_index(&blobs[p], &kernels)))
         .collect();
     let mut by_index: BTreeMap<(&str, &str, &str, &str), [u64; 4]> = BTreeMap::new();
-    for series in &job {
+    for series in &job.series {
         for ix in &series.ixs {
             let (n, kn) = tallies[ix.path.as_str()];
             let acc = by_index
@@ -616,7 +698,7 @@ fn main() {
     // integers numerically, strings by code point, which for UTF-8 is the
     // same as by byte.
     let mut out = BufWriter::new(io::stdout().lock());
-    let names: Vec<&str> = job.iter().map(|s| s.name.as_str()).collect();
+    let names: Vec<&str> = job.series.iter().map(|s| s.name.as_str()).collect();
     writeln!(out, "s\t{}", names.join(" ")).unwrap();
     let mut classes: Vec<_> = by_class.into_iter().collect();
     classes.sort_unstable();
@@ -629,6 +711,12 @@ fn main() {
     for ((smask, arch, comp, mask, flav), acc) in flavours {
         writeln!(out, "f\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                  smask, utf8(arch), comp, mask, flav, acc[0], acc[1], acc[2]).unwrap();
+    }
+    let mut groups: Vec<_> = by_bucket.into_iter().collect();
+    groups.sort_unstable();
+    for ((smask, arch, comp, mask, bucket), acc) in groups {
+        writeln!(out, "b\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                 smask, utf8(arch), comp, mask, utf8(bucket), acc[0], acc[1], acc[2]).unwrap();
     }
     for ((series, pocket, comp, arch), acc) in &by_index {
         writeln!(out, "i\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",

@@ -236,30 +236,27 @@ def log(msg):
 
 
 def parse_aggregate(lines):
-    """(by_class, by_flavour, by_index, series) out of an aggregate's text.
+    """(by_class, by_flavour, by_bucket, by_index, series) from its text.
 
     The one format both ends speak: the cache stores it, and archive-aggregate
     prints it, so a fresh aggregate and a cached one read back the same way.
     """
-    by_class, by_flavour, by_index, series = {}, {}, {}, []
+    by_class, by_flavour, by_bucket, by_index, series = {}, {}, {}, {}, []
+    tables = {"c": by_class, "f": by_flavour, "b": by_bucket}
     for line in lines:
         kind, _, rest = line.rstrip("\n").partition("\t")
         fields = rest.split("\t")
         if kind == "s":
             series = rest.split()
-        elif kind == "c":
-            by_class[(int(fields[0]), fields[1], fields[2],
-                      int(fields[3]), fields[4])] = [
-                int(fields[5]), int(fields[6]), int(fields[7])]
-        elif kind == "f":
-            by_flavour[(int(fields[0]), fields[1], fields[2],
-                        int(fields[3]), fields[4])] = [
+        elif kind in tables:
+            tables[kind][(int(fields[0]), fields[1], fields[2],
+                          int(fields[3]), fields[4])] = [
                 int(fields[5]), int(fields[6]), int(fields[7])]
         elif kind == "i":
             by_index[(fields[0], fields[1], fields[2], fields[3])] = [
                 int(fields[4]), int(fields[5]), int(fields[6]),
                 int(fields[7])]
-    return by_class, by_flavour, by_index, series
+    return by_class, by_flavour, by_bucket, by_index, series
 
 
 # ---------------------------------------------------------------- cache
@@ -398,7 +395,7 @@ class Cache:
         return self._path("aggregate", snapshot, key + ".tsv.gz")
 
     def get_aggregate(self, snapshot, key):
-        """Cached (by_class, by_flavour, by_index, series), or None.
+        """Cached (by_class, by_flavour, by_bucket, by_index, series), or None.
 
         There is no "we asked and there was nothing" entry here, unlike the
         release cache: a snapshot that aggregates to nothing costs only the
@@ -411,8 +408,8 @@ class Cache:
         with gzip.open(path, "rt") as f:
             return parse_aggregate(f)
 
-    def put_aggregate(self, snapshot, key, by_class, by_flavour, by_index,
-                      series):
+    def put_aggregate(self, snapshot, key, by_class, by_flavour, by_bucket,
+                      by_index, series):
         path = self.aggregate_path(snapshot, key)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = "%s.%d.tmp" % (path, os.getpid())
@@ -424,6 +421,9 @@ class Cache:
             for k in sorted(by_flavour):
                 f.write("f\t%d\t%s\t%s\t%d\t%s\t%d\t%d\t%d\n"
                         % (k[0], k[1], k[2], k[3], k[4], *by_flavour[k]))
+            for k in sorted(by_bucket):
+                f.write("b\t%d\t%s\t%s\t%d\t%s\t%d\t%d\t%d\n"
+                        % (k[0], k[1], k[2], k[3], k[4], *by_bucket[k]))
             for k in sorted(by_index):
                 f.write("i\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\n"
                         % (k[0], k[1], k[2], k[3], *by_index[k]))
@@ -722,6 +722,41 @@ SOURCES_COLUMNS = 8
 # page and `report` count every other class as kernel.
 OTHER = "_other"
 
+# The package groups, read from aggregate/buckets.tsv; see the comment at its
+# top.  "kernel" and "other" are the aggregator's own, either side of these.
+BUCKETS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "aggregate", "buckets.tsv")
+_bucket_rules = None
+
+
+def bucket_rules():
+    """[(bucket, regex)] from buckets.tsv, in the order they are tried."""
+    global _bucket_rules
+    if _bucket_rules is None:
+        rules = []
+        with open(BUCKETS_FILE) as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line or line.startswith("#"):
+                    continue
+                name, _, rx = line.partition("\t")
+                if not rx:
+                    raise RuntimeError("%s: no pattern for %r"
+                                       % (BUCKETS_FILE, name))
+                rules.append((name, rx))
+        _bucket_rules = rules
+    return _bucket_rules
+
+
+def bucket_names():
+    """Every bucket, in the order the page should draw them."""
+    return ["kernel"] + [name for name, _ in bucket_rules()] + ["other"]
+
+
+def bucket_digest():
+    """What the cache key knows of the rules: the rules, not the comments."""
+    return hashlib.sha256(repr(bucket_rules()).encode()).hexdigest()[:16]
+
 
 # Bump when a change to archive-aggregate or the tables it builds would give a
 # different answer for the same inputs, so that cached aggregates written by
@@ -767,10 +802,13 @@ def aggregate_key(series, components, arches, pockets, sources,
     stamp does not already pin down.  That means the live archive: a stamp
     makes an aggregate valid forever, and a suite read from the live archive
     has no such guarantee, so its content identity goes in the key instead.
+
+    The bucket rules are in it too, so that editing buckets.tsv re-aggregates
+    on the next build rather than waiting for someone to bump the version.
     """
     parts = (AGGREGATE_VERSION, sorted(series), list(components),
              sorted(arches) if arches else None, sorted(pockets),
-             bool(sources))
+             bool(sources), bucket_digest())
     # Appended only when there is one, so that every aggregate cached before
     # this argument existed keeps the key it was written under.
     if extra is not None:
@@ -1050,7 +1088,7 @@ class Builder:
         then pocket, then plan order.
         """
         bit = {p: 1 << i for i, p in enumerate(POCKETS)}
-        lines = []
+        lines = ["bucket\t%s\t%s" % rule for rule in bucket_rules()]
         for series, plan in planned:
             lines.append("series\t%s\t%d" % (series, series_bit(series)))
             for component in self.components:

@@ -1,0 +1,21 @@
+# Package groups: bucket<TAB>regex, matched against the whole source package
+# name.  Every pool file goes to exactly one bucket, so the buckets add up to
+# the archive: "kernel" comes first and is the kernel rule, not a pattern;
+# then these, in order, the first match winning; then "other" for the rest.
+#
+# Matched on the source rather than the binary, so a library a driver ships
+# goes with the driver.  The patterns name sources outright where a prefix
+# would sweep in strangers -- ^roc would take rocksdb and rockdodger, ^libcu
+# libcue and libcurses-perl.
+#
+# The page draws these in this order.  The aggregator is handed this file's
+# contents and the cache key covers them, so an edit here re-aggregates on
+# the next build without anyone having to bump AGGREGATE_VERSION.
+firmware	linux-firmware(-.+)?
+cuda	cuda-.+-[0-9]+-[0-9]+|lib(cublas|cudla|cufft|cufile|cuobjclient|curand|cusolver|cusparse|npp|nvfatbin|nvjitlink|nvjpeg|nvptxcompiler|nvvm)-[0-9]+-[0-9]+|nsight-(compute|systems)-[0-9]+-[0-9]+|nvidia-(cuda-toolkit|cuda-samples|cudnn|cudnn-frontend|cutlass|nccl)|cub|libcudacxx
+nvidia-drivers	nvidia-graphics-drivers(-.+)?|libnvidia-nscq-[0-9]+|nvidia-fabricmanager(-.+)?|nvidia-open-gpu-kernel-modules|nvidia-imex|nvidia-settings(-tesla)?
+rocm	rocm(-.+)?|rocminfo|roc(alution|blas|dbgapi|fft|prim|rand|solver|sparse|thrust|tracer|wmma)|rocr-runtime|roct-thunk-interface|hip(blas|blas-common|blaslt|cub|fft|fort|ify|rand|solver|sparse|sparselt)|composable-kernel|miopen|migraphx|rccl|amdsmi|half|llvm-toolchain-rocm
+dotnet	dotnet[0-9]*
+jdk	openjdk-.+
+cross-toolchains	gcc-[0-9]+-cross(-ports|-mipsen)?|cross-toolchain-base(-ports|-mipsen)?|cross-gcc|gcc-defaults-(ports|mipsen)|binutils-mipsen|(gcc|binutils|gdb)-mingw-w64|mingw-w64|gcc-(arm-none-eabi|avr|bpf|h8300-hms|m68hc1x|msp430|or1k-elf|riscv64-unknown-elf|sh-elf|xtensa|xtensa-lx106)|binutils-(arm-none-eabi|avr|bpf|djgpp|embedded|h8300-hms|m68hc1x|msp430|or1k-elf|riscv64-unknown-elf|sh-elf|xtensa|xtensa-lx106|z80)|gdb-(avr|bpf|msp430)|newlib|picolibc
+compilers	gcc-[0-9]+(\.[0-9]+)?|gcc-snapshot|gcc-defaults|binutils|binutils-gold|llvm-toolchain-([0-9]+|snapshot)|llvm-defaults|rustc(-[0-9.]+)?|golang-[0-9.]+|golang-defaults|ghc|gnat(-[0-9]+)?
