@@ -10,7 +10,10 @@
 #
 # The page draws these in this order.  The aggregator is handed this file's
 # contents and the cache key covers them, so an edit here re-aggregates on
-# the next build without anyone having to bump AGGREGATE_VERSION.
+# the next build without anyone having to bump AGGREGATE_VERSION -- which also
+# means it costs what a bump costs, and CI cannot pay it: rebuild both pages
+# from the full cache and upload the state before pushing (see ci/state).
+# `breakdown --buckets` shows what an edit does without building anything.
 firmware	linux-firmware(-.+)?
 cuda	cuda-.+-[0-9]+-[0-9]+|lib(cublas|cudla|cufft|cufile|cuobjclient|curand|cusolver|cusparse|npp|nvfatbin|nvjitlink|nvjpeg|nvptxcompiler|nvvm)-[0-9]+-[0-9]+|nsight-(compute|systems)-[0-9]+-[0-9]+|nvidia-(cuda-toolkit|cuda-samples|cudnn|cudnn-frontend|cutlass|nccl)|cub|libcudacxx
 nvidia-drivers	nvidia-graphics-drivers(-.+)?|libnvidia-nscq-[0-9]+|nvidia-fabricmanager(-.+)?|nvidia-open-gpu-kernel-modules|nvidia-imex|nvidia-settings(-tesla)?

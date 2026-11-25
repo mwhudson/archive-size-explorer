@@ -13,17 +13,20 @@ and
 It measures three things: the size of `pool/`, which is the packages; the size
 of `dists/`, which is the indexes `apt update` downloads before it can install
 anything; and how much of each is kernels. That last one is where the tool
-started and is still the most striking number in it — at 2026-11-01 kernel
-packages are **48.4%** of the 9.0 TiB the eleven currently-mirrored series
-occupy.
+started and is still the most striking number in it — kernel packages are close
+to half of what the currently-mirrored series occupy. Past kernels, it sorts
+the rest of `pool/` into package groups, CUDA and ROCm and the toolchains among
+them, so that whatever else is taking the room can be watched too.
 
 The output is a single HTML file: open it with `file://`, mail it to someone,
 put it on a web server. Series, architecture, pocket and component are filters
 in the page, so you explore by clicking rather than by re-running the script.
 
-`kernel-sizes`, alongside this in the repo, answers the kernel question from
-whatever `chdist` has on disk instead. The counting rules differ; see
-[How things are counted](#how-things-are-counted).
+`kernel-sizes`, alongside this in the repo, is where the tool started: it
+answers the kernel question from whatever `chdist` has on disk, by the narrower
+kernel rule this tool used to have, and is kept for reference rather than
+maintained. See [How things are counted](#how-things-are-counted) for how its
+counting differs.
 
 ## The page
 
@@ -33,15 +36,17 @@ total reads largest because it is the denominator for everything below it, and
 its note says what went into it — the selection is not always the whole
 archive.
 
-There are five tabs. **Archive size** is where the page opens: the archive
-total over time, deduplicated across series, and the kernel share of it.
-**Kernels over time** draws kernel bytes and kernel share the same way, as a
-line per series or per architecture. **Kernel breakdown** takes a single
-snapshot apart instead — kernel share by architecture, where the kernel bytes
-go, and a split by flavour. **Tables** is the numbers behind the charts, plus
-one snapshot in full. **Package lists** asks the same questions of `dists/`
-rather than `pool/`, and is the one tab whose numbers are not comparable with
-the others.
+There are six tabs. **Archive size** is where the page opens: the archive total
+over time, deduplicated across series, and the kernel share of it. **Kernels
+over time** draws kernel bytes and kernel share the same way, as a line per
+series or per architecture. **Kernel breakdown** takes a single snapshot apart
+instead — kernel share by architecture, where the kernel bytes go, and a split
+by flavour. **Package groups** does for the whole archive what the kernel tabs
+do for kernels: every file in exactly one group, a line per group in bytes and
+as a share, and the chosen snapshot's groups side by side. **Tables** is the
+numbers behind the charts, plus one snapshot in full. **Package lists** asks
+the same questions of `dists/` rather than `pool/`, and is the one tab whose
+numbers are not comparable with the others.
 
 A "one line per" control switches the charts between a line per series and a
 line per architecture.
@@ -170,8 +175,7 @@ $ ./archive-size-explorer build -s noble -s plucky --from 2025-01 -o archive.htm
 $ ./archive-size-explorer build --every week --from 2026-06 -a amd64 -o recent.html
 ```
 
-There is a text mode too, for a quick look or for diffing against
-`kernel-sizes`:
+There is a text mode too, for a quick look:
 
 ```console
 $ ./archive-size-explorer report -s noble --snapshot 2025-09
@@ -219,7 +223,9 @@ $ ./archive-size-explorer breakdown --no-kernels --family -n 6
 `gcc-13-cross` and `gcc-14-cross` collapse into one `gcc-cross` row and the
 `vers` column tells you how many are being carried at once. Only a token
 introduced by a dash counts, so `dotnet8` and `libc6` keep their digits —
-guessing at those would merge far more than it split.
+guessing at those would merge far more than it split. `--buckets` groups by the
+page's [package groups](#package-groups) instead, and is how to try out a
+change to them.
 
 Give it a window instead of a single snapshot and it tracks each row over time.
 `--match` narrows to one thing you care about:
@@ -295,9 +301,9 @@ that wrote it, so the binary has to come from the same source as the cache key
 and `AGGREGATE_VERSION` it is filed under.
 
 What CI cannot do is anything that re-aggregates every snapshot — an
-`AGGREGATE_VERSION` bump, or `--refresh-live` — since that needs every blob
-the window has ever referenced. Do those on a machine with the full cache,
-then replace the asset from it:
+`AGGREGATE_VERSION` bump, an edit to `aggregate/buckets.tsv`, or
+`--refresh-live` — since that needs every blob the window has ever referenced.
+Do those on a machine with the full cache, then replace the asset from it:
 
 ```console
 $ ./ci/state pack state.tar
@@ -310,16 +316,48 @@ is why CI never refreshes it.
 
 ## What counts as a kernel
 
-Every binary built by a source that ships *something* which
-`Provides: linux-image`, plus any `linux-objects-*-<kver>` built for a kernel
-version seen in those images. The second half matters a lot —
-`linux-objects-*` comes from `linux-restricted-modules` (the pre-built NVIDIA
-drivers) and is consistently the single biggest slice.
+Every binary built by a source that does any of three things: ships something
+which `Provides: linux-image`; builds a `linux-image-<kver>`; or builds any
+`linux-*` binary named for a kernel ABI, like
+`linux-modules-nvidia-580-6.8.0-31-generic`. On top of that, any
+`linux-objects-*-<kver>` built for a kernel version seen in those images,
+whatever its source.
 
-Every kernel source in the archive today is named `linux*`, and so is every
-binary they build, but nothing here relies on that: classification is driven
-entirely by `Provides: linux-image`, so a kernel source under some other name
-would still be found.
+The first test is the one the tool started with, and on its own it misses a
+few hundred GiB, about 4% of the archive at 2026-11. The second catches images
+old enough never to have declared the `Provides`, `linux-hwe-5.4` and
+`linux-ibm` among them. The third catches `linux-restricted-signatures`,
+whose signed NVIDIA modules provide nothing, and the rest of
+`linux-restricted-modules`, including objects built for an ABI whose image has
+since been superseded. `linux-objects-*` — the pre-built NVIDIA drivers, one
+per kernel ABI per flavour per driver branch — is consistently the single
+biggest slice of the kernels.
+
+The last two tests lean on names, which the first never did. Nothing else in
+an index ties a signed module to a kernel, and across the window they claim
+nothing outside `linux*`, while leaving nothing in `linux*` but
+`linux-firmware`, which is a package group of its own, and `linuxcnc`.
+
+## Package groups
+
+Kernels are not the only thing worth watching, so every file in `pool/` also
+goes into exactly one package group, and the groups add up to the archive.
+Kernel comes first and is the rule above; then the patterns in
+`aggregate/buckets.tsv`, tried in order against the source package's name, the
+first match winning; then other, for whatever none of them names.
+
+Matching the source rather than the binary means a library goes with what
+builds it: the NVIDIA driver's userspace libraries and DKMS source are
+`nvidia-drivers`, one copy per driver branch, while the modules prebuilt from
+the same driver for every kernel are kernel. The patterns name sources outright
+where a prefix would sweep in strangers — `^roc` would take `rocksdb`, `^libcu`
+`libcurses-perl`.
+
+Editing `buckets.tsv` is enough to change them. The rules travel to the
+aggregator with each job and their digest is in the cache key, so the next
+build re-aggregates without anyone bumping `AGGREGATE_VERSION`. `breakdown
+--buckets` ranks the groups the same way the page draws them, which is the
+quick way to see what a change does before building a page.
 
 ## How things are counted
 
@@ -384,11 +422,12 @@ stonking at 2026-09 that is 103 GiB, an entire port, invisible. So a row is
 filed under the directory it came from, with `Architecture: all` as the one
 exception, since that genuinely *is* one file listed in every directory.
 
-`kernel-sizes` applies the same kernel rule and reports `all` and `source`
-separately too, but it dedupes on `(package, architecture)` and keeps only the
-first version it sees, so it drops the release-pocket version of anything since
-updated; and it has no notion of the pool being shared between series. Expect
-its totals to be lower per series and higher in aggregate.
+`kernel-sizes` applies the older, narrower kernel rule — the first test above
+and the `linux-objects-*` one — and reports `all` and `source` separately too,
+but it dedupes on `(package, architecture)` and keeps only the first version it
+sees, so it drops the release-pocket version of anything since updated; and it
+has no notion of the pool being shared between series. Expect its totals to be
+lower per series and higher in aggregate.
 
 ## What the archive carried, not what snapshot holds
 
@@ -559,9 +598,6 @@ dropped is 48.9%.
   publishes a `.gz` of each as well, and `Release` lists an uncompressed
   variant that is not published at all. So it is what one `apt update` pulls,
   not what a mirror stores.
-* The figures here have not been diffed against `kernel-sizes` on the same
-  data. The `report` subcommand exists to make that comparison easy if you
-  want it.
 
 ## How it is put together
 

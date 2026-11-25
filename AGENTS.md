@@ -177,6 +177,12 @@ writes the plan out as the binary's stdin.
 * **It holds every inflated blob of a snapshot at once**, a few GiB at the
   newest snapshots. One snapshot at a time is fine on a small machine; several
   in parallel are not.
+* **An edit to `aggregate/buckets.tsv` is a re-aggregation of everything.**
+  The rules' digest is in every cache key, so no version bump is needed, but
+  for the same reason the change costs what a bump costs and CI cannot pay
+  it: build both pages here from the full cache and upload the state before
+  pushing, exactly as for `AGGREGATE_VERSION`. `breakdown --buckets` shows
+  what a rule change does without building anything.
 
 ## Long runs
 
@@ -242,6 +248,15 @@ needs Dart Sass. The build itself needs neither.
   `filters` alone even though all three have `DEFAULTS` entries.
 * **The Package lists tab deduplicates nothing**, so its numbers are not
   comparable with any other tab's. That is the point of it.
+* **The payload's `byBucket` has no kernel or other rows.** They were most of
+  the table and both follow exactly from `byClass`, which covers the same
+  files under the same keys; `bucketTimeline()` derives them, and
+  `tests/groups.js` checks the groups still sum to the archive. The cache
+  keeps them, so `breakdown` and `verify` see every group.
+* **The kernel rule matches names.** It used to be driven by
+  `Provides: linux-image` alone and missed the restricted signatures and the
+  older images; nothing in a slim index ties a signed module to a kernel but
+  its name. It claims nothing outside `linux*` across the window.
 * **trusty is slightly overstated early in the window.** Its updates,
   security, proposed and backports pockets are held at today's value because
   no historical source for them exists. The page says so.
